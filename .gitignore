@@ -1,0 +1,17 @@
+# Large, machine-local artifacts — never commit these (multi-GB)
+venv/
+models/
+
+# Runtime progress/diagnostics
+.transcribe_progress.txt
+.transcribe_fault.txt
+
+# Transcripts / audio (personal session data)
+*.txt
+*.wav
+*.m4a
+!README*.txt
+
+# Python
+__pycache__/
+*.pyc
