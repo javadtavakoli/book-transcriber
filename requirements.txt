@@ -1,0 +1,13 @@
+# Core engine
+faster-whisper==1.2.1
+
+# CUDA runtime libraries loaded at runtime by CTranslate2 (via dlopen).
+# Required for GPU inference; harmless to keep even on CPU-only machines.
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cudnn-cu12==9.24.0.43
+
+# Pulled in automatically by faster-whisper, pinned here for reproducibility:
+#   ctranslate2==4.8.1
+#   av==18.0.0
+#   tokenizers==0.23.1
+#   onnxruntime==1.27.0

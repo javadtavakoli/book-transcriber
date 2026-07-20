@@ -10,7 +10,9 @@ models/
 *.txt
 *.wav
 *.m4a
+# ...but keep project text files that belong in the repo
 !README*.txt
+!requirements.txt
 
 # Python
 __pycache__/
