@@ -17,3 +17,8 @@ models/
 # Python
 __pycache__/
 *.pyc
+!prompts/*.txt
+
+# Local run logs
+*.log
+.run_out.txt

@@ -6,7 +6,7 @@ uploaded to a cloud service.
 
 Built on [faster-whisper](https://github.com/SYSTRAN/faster-whisper) with OpenAI's
 **`large-v3`** model. Tuned for **Persian (فارسی)** by default, but works for any
-language Whisper supports by changing one line.
+language Whisper supports via `--language`.
 
 - 🔒 **Private** — audio never leaves your machine
 - ⚡ **Fast** — a ~90-minute recording transcribes in ~20–25 min on a laptop RTX 4050
@@ -19,27 +19,29 @@ language Whisper supports by changing one line.
 
 ## Requirements
 
-- **Linux** (tested on Ubuntu 24.04)
+- **Linux** (tested on Ubuntu 24.04) or **Windows 10/11** (64-bit)
 - **NVIDIA GPU** with recent drivers (CPU-only also works but is much slower)
-- **Python 3.10+** (tested on 3.12)
-- **ffmpeg** — for decoding audio: `sudo apt install ffmpeg`
+- **Python 3.11+** (tested on 3.12). On Windows install it from
+  [python.org](https://www.python.org/downloads/) and tick **"Add python.exe to PATH"**.
 
-No system-wide CUDA toolkit is needed — the required CUDA libraries are installed
-as Python wheels (see `requirements.txt`).
+No system-wide CUDA toolkit and no ffmpeg install are needed. The CUDA libraries
+come as Python wheels (see `requirements.txt`), and audio decoding uses the FFmpeg
+that ships inside PyAV.
 
 ---
 
 ## Setup (one time)
 
+**Linux**
+
 ```bash
 git clone https://github.com/javadtavakoli/book-transcriber.git
 cd book-transcriber
-
-# create the local virtual environment
-python3 -m venv venv
-venv/bin/pip install --upgrade pip
-venv/bin/pip install -r requirements.txt
+./setup.sh
 ```
+
+**Windows**: download/clone the repo, then double-click **`setup.bat`** (or run it
+from a terminal).
 
 The **model (~2.9 GB) downloads automatically on the first run** into `./models/`
 and is reused offline afterwards. The first run therefore takes longer; every run
@@ -52,54 +54,69 @@ after that is fully offline.
 
 ## Usage
 
-```bash
-./run.sh "/path/to/recording.m4a"
+| | Linux | Windows |
+|---|---|---|
+| Transcribe a file | `./run.sh recording.m4a` | `run.bat recording.m4a`, **or drag the file onto `run.bat`** |
+| See all options | `./run.sh -h` | `run.bat -h` |
+
+The transcript is written next to the audio as `recording - متن خام.txt`.
+If you double-click `run.bat` without a file, it asks for the path. You can drag
+the file into the window.
+
+### Options
+
+```
+-o, --output FILE       where to write the transcript (single input only)
+-p, --prompt TEXT       proper nouns to seed the model with (see below)
+-f, --prompt-file FILE  same, read from a UTF-8 text file
+-l, --language CODE     language (default: fa; e.g. en, ar, ru)
+-t, --timestamps        prefix each line with [h:mm:ss]
+-m, --model NAME        Whisper model (default: large-v3)
+-d, --device auto|cuda|cpu
 ```
 
-- The transcript is written next to the audio as `recording - متن خام.txt`.
-- Pass a second argument to choose the output path:
-  ```bash
-  ./run.sh "/path/to/recording.m4a" "/path/to/transcript.txt"
-  ```
-- Progress is printed live and also written to `.transcribe_progress.txt`:
-  ```
-  loading large-v3 on cuda/float16 ...
-  loaded on cuda/float16
-  audio duration: 5447s (90.8 min)
-   25.8%  seg#500  t=  1405s/5447s  elapsed=403s  eta=1160s
-  ...
-  DONE  segments=1982  elapsed=1423s
-  ```
+Several files can be given at once; the model is loaded only once:
 
-Both `.wav` and `.m4a` (and anything ffmpeg reads) work. **WAV is preferred** when
+```bash
+./run.sh session1.m4a session2.m4a -f prompts/my-book.txt -t
+```
+
+Both `.wav` and `.m4a` (and most other audio formats) work. **WAV is preferred** when
 you have the choice.
 
-### Run in the background
+Progress is printed live and also written to `.transcribe_progress.txt`:
 
-For long recordings, detach it so it keeps running:
+```
+loading large-v3 on cuda/float16 ...
+loaded on cuda/float16
+audio duration: 5447s (90.8 min)
+ 25.8%  seg#500  t=  1405s/5447s  elapsed=403s  eta=1160s
+...
+DONE  segments=1982  elapsed=1423s
+```
+
+### Seed the model with names (biggest quality win)
+
+List the proper nouns you expect to hear: book title, author, characters,
+thinkers. Whisper uses them to spell names correctly instead of guessing. The
+easiest way is one text file per book in `prompts/` (see the examples there):
+
+```bash
+./run.sh session.m4a -f prompts/example-chasing-homer.txt
+```
+
+or inline:
+
+```bash
+./run.sh session.m4a -p "جلسهٔ کتاب‌خوانی. کتاب: تعقیب هومر، کراسناهورکای، بکت، کافکا."
+```
+
+### Run in the background (Linux)
 
 ```bash
 nohup ./run.sh "/path/to/recording.wav" > run.log 2>&1 &
 tail -f .transcribe_progress.txt
 ```
-
----
-
-## Configure it for each session
-
-Open **`transcribe.py`** and edit the two things at the top:
-
-**1. `PROMPT`** — the single biggest quality win. List the proper nouns you expect
-to hear (book title, author, characters, thinkers). Whisper uses it to spell names
-correctly instead of guessing.
-
-```python
-PROMPT = ("جلسهٔ کتاب‌خوانی به زبان فارسی. کتاب: تعقیب هومر، نوشتهٔ لاسلو کراسناهورکای. "
-          "همچنین: دست آخر اثر ساموئل بکت، اودیسه، هومر، کالیپسو، کافکا، نیچه.")
-```
-
-**2. Language** (only if not Persian) — change `language="fa"` in the
-`model.transcribe(...)` call to your language code (`"en"`, `"ar"`, …).
 
 ---
 
@@ -113,9 +130,9 @@ PROMPT = ("جلسهٔ کتاب‌خوانی به زبان فارسی. کتاب: 
   - **runaway repetition on music/silence** (`نه نه نه…`, `…`) → suppressed with
     `condition_on_previous_text=False`, a temperature fallback ladder,
     `no_speech_threshold`, and voice-activity detection (VAD).
-- On startup the script makes the bundled CUDA libraries visible to the dynamic
-  linker (via `LD_LIBRARY_PATH` + a one-time re-exec), so you don't need a
-  system CUDA install.
+- On startup the script makes the bundled CUDA libraries visible: on Linux via
+  `LD_LIBRARY_PATH` + a one-time re-exec, on Windows via `os.add_dll_directory`.
+  You don't need a system CUDA install.
 
 ---
 
@@ -123,19 +140,22 @@ PROMPT = ("جلسهٔ کتاب‌خوانی به زبان فارسی. کتاب: 
 
 | Symptom | Fix |
 |---|---|
-| `Library libcublas.so.12 is not found` | Reinstall deps: `venv/bin/pip install -r requirements.txt`. The script sets the library path itself; make sure you launch via `./run.sh`. |
+| `Library libcublas.so.12 is not found` | Re-run `./setup.sh`. The script sets the library path itself; make sure you launch via `./run.sh`. |
+| `cublas64_12.dll` / `cudnn*.dll` not found (Windows) | Re-run `setup.bat` and update the NVIDIA driver. To get going anyway, use `run.bat file.m4a -d cpu`. |
+| Persian text shows as `???` in the Windows console | Only the console display is affected; the `.txt` file is fine (UTF-8). Windows Terminal shows it correctly. |
 | Process dies mid-run inside a sandbox / IDE agent | Some sandboxes kill sustained GPU compute. Run it in a normal terminal. |
 | Out of GPU memory | The script auto-falls back to `int8_float16`, then CPU. You can also edit the fallback list in `transcribe.py`. |
-| `ffmpeg not found` | `sudo apt install ffmpeg`. |
-| Garbled names | Add them to `PROMPT`. |
+| Garbled names | Pass them with `-p` / `-f` (see above). |
 
 ---
 
 ## Project layout
 
 ```
-transcribe.py        the transcription script (edit PROMPT here)
-run.sh               wrapper: venv/bin/python transcribe.py "$@"
+transcribe.py        the transcription CLI (run with -h)
+run.sh / run.bat     launchers for Linux / Windows
+setup.sh / setup.bat one-time venv + dependency install
+prompts/             example prompt files (one per book/session)
 requirements.txt     pinned dependencies
 venv/                local Python env            (created by you, gitignored)
 models/              faster-whisper large-v3     (auto-downloaded, gitignored)
