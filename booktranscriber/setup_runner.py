@@ -29,9 +29,11 @@ SELFTEST_TIMEOUT = 600
 
 
 class SetupError(Exception):
-    def __init__(self, kind: str, message: str = "", needed: int = 0, free: int = 0):
+    def __init__(self, kind: str, message: str = "", needed: int = 0, free: int = 0,
+                 fits_without_llm: bool = False):
         super().__init__(message or kind)
         self.kind, self.needed, self.free = kind, needed, free
+        self.fits_without_llm = fits_without_llm    # the space is enough if the optional helper is skipped
 
 
 @dataclass
@@ -154,7 +156,7 @@ def run_setup(plan: SetupPlan, settings: Settings, on_progress: Callable[[SetupP
     steps += [_Step("whisper", f) for f in model_files]
     if plan.include_llm:
         steps += _llm_steps(plan.info.os, plan.llm_model, plan.llm_backend, llm, cancel)
-    meter = _fetch(steps, on_progress, cancel, downloader, check=True)
+    meter = _fetch(steps, on_progress, cancel, downloader, check=True, llm_optional=True)
     meter.report("test", 0, 1)
     selftest(str(model_path), settings.device, cancel=cancel)
     meter.report("test", 1, 1)
@@ -199,16 +201,20 @@ def _llm_steps(os_name: str, model_key: str, backend: str, llm, cancel) -> list[
     return steps + [_Step("llm", llm.model_file(model_key))]
 
 
-def _fetch(steps: list[_Step], on_progress, cancel, downloader, check: bool = False) -> "_Meter":
+def _fetch(steps: list[_Step], on_progress, cancel, downloader, check: bool = False,
+           llm_optional: bool = False) -> "_Meter":
     """Download every step in order under one overall meter, checking disk space first."""
     total = sum(st.file.size for st in steps)
     # Only what is still to arrive counts (a resumed download already has part of it on disk),
     # plus room to unpack each pending archive next to itself.
-    pending = [st for st in steps if not st.skip]
-    needed = sum(_left(st.file) for st in pending) + sum(st.file.size for st in pending if st.unpack)
+    def room(chosen):
+        pending = [st for st in chosen if not st.skip]
+        return sum(_left(st.file) for st in pending) + sum(st.file.size for st in pending if st.unpack)
+    needed = room(steps)
     free = shutil.disk_usage(paths.data_dir()).free
     if free < needed:
-        raise SetupError("disk", needed=needed, free=free)
+        fits = llm_optional and room([st for st in steps if st.item != "llm"]) <= free
+        raise SetupError("disk", needed=needed, free=free, fits_without_llm=fits)
 
     meter = _Meter(total, on_progress)
     if check:

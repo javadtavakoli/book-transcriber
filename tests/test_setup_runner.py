@@ -290,3 +290,27 @@ def test_run_llm_setup_alone():
     assert (s.llm_model, s.llm_backend) == ("gemma-4-e4b", "vulkan")
     assert (s.whisper_model, s.whisper_model_path, s.setup_done) == ("large-v3", "/w", True)
     assert {p.item for p in seen} == {"llm"} and seen[-1].overall_done == seen[-1].overall_total
+
+
+def _tight_disk(monkeypatch, free):
+    import shutil
+    from collections import namedtuple
+    Usage = namedtuple("Usage", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: Usage(10**6, 0, free))
+
+
+@pytest.mark.parametrize("free,fits", [(1400, True), (1399, False)])
+def test_disk_error_says_whether_it_fits_without_llm(monkeypatch, free, fits):
+    _tight_disk(monkeypatch, free)                      # whisper side alone needs 1400; the helper adds 1300
+    with pytest.raises(SetupError) as e:
+        run_setup(make_plan(GPU_INFO, None), Settings(), no_test, threading.Event(), downloader=fake_dl,
+                  sources=FakeSources(), selftest=no_test, llm=FakeLlm())
+    assert e.value.kind == "disk" and e.value.fits_without_llm is fits
+
+
+def test_run_llm_setup_disk_error_never_offers_skip(monkeypatch):
+    from booktranscriber.setup_runner import run_llm_setup
+    _tight_disk(monkeypatch, 1)
+    with pytest.raises(SetupError) as e:
+        run_llm_setup("gemma-4-e4b", "vulkan", Settings(), no_test, threading.Event(), downloader=fake_dl, llm=FakeLlm())
+    assert e.value.kind == "disk" and e.value.fits_without_llm is False
