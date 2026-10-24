@@ -58,13 +58,19 @@ def writable(folder: Path) -> bool:
         return False
 
 
+def _pid_file() -> Path:
+    # llm_server keeps the running server's pid in the app folder's llm/, which is the default
+    # downloads llm/ too: it belongs to the app folder and never moves.
+    return (paths.data_dir_path() / "llm" / "server.pid").resolve()
+
+
 def _files(root: Path) -> list[Path]:
-    """Every file under the download subfolders of root."""
-    out = []
+    """Every file under the download subfolders of root, except the llama-server pid file."""
+    out, pid = [], _pid_file()
     for sub in DOWNLOAD_SUBDIRS:
         for dirpath, _dirs, names in os.walk(Path(root) / sub):
             out += [Path(dirpath) / n for n in sorted(names)]
-    return [p for p in out if p.is_file()]
+    return [p for p in out if p.is_file() and p.resolve() != pid]
 
 
 def downloads_size(root: Path) -> int:
@@ -240,5 +246,15 @@ def move_downloads(settings: Settings, new_root: Path, progress: Callable[[MoveP
         undo()
         raise MoveError("copy", needed, free) from e
 
+    # Delete exactly what was moved, then the folders it leaves empty; anything else stays.
+    for src in files:
+        try:
+            src.unlink()
+        except OSError:
+            pass
     for sub in DOWNLOAD_SUBDIRS:
-        shutil.rmtree(old_root / sub, ignore_errors=True)
+        for dirpath, _dirs, _names in os.walk(old_root / sub, topdown=False):
+            try:
+                os.rmdir(dirpath)
+            except OSError:     # not empty
+                pass

@@ -200,6 +200,20 @@ def test_move_space_check(tmp_path, monkeypatch):
     _assert_untouched(old, new, before)
 
 
+def test_move_leaves_pid_file_in_app_folder(tmp_path):
+    old = _fake_downloads()
+    pid = paths.data_dir() / "llm" / "server.pid"
+    pid.write_text('{"pid": 1}')
+    (old / "models" / "notes.txt").write_text("mine")
+    s = _settings()
+    new = tmp_path / "new"
+    downloads.move_downloads(s, new, lambda p: None, threading.Event())
+    assert pid.read_text() == '{"pid": 1}' and not (new / "llm" / "server.pid").exists()
+    assert not (old / "llm" / "models").exists()
+    assert (new / "models" / "notes.txt").is_file()
+    assert not (old / "models").exists()
+
+
 def test_move_same_root_is_noop(registry_calls):
     old = _fake_downloads()
     s = _settings()
