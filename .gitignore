@@ -22,3 +22,6 @@ __pycache__/
 # Local run logs
 *.log
 .run_out.txt
+
+# Brainstorming mockups
+.superpowers/
