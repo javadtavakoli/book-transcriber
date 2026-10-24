@@ -1,0 +1,54 @@
+# Run the test suite on every push and pull request.
+# Tests never use a GPU, a real model or the network, so the multi-GB CUDA wheels are skipped here.
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-14]
+    # Windows and macOS are report-only until their own stages (known gaps: the fake
+    # llama-server launcher and process checks are POSIX-only for now).
+    continue-on-error: ${{ matrix.os != 'ubuntu-24.04' }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Qt system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3
+
+      - name: Install Python dependencies (without CUDA wheels)
+        shell: bash
+        run: |
+          grep -v '^nvidia-' requirements.txt > requirements-ci.txt
+          sed 's/^-r requirements.txt$/-r requirements-ci.txt/' requirements-gui.txt > requirements-gui-ci.txt
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-gui-ci.txt pytest==9.1.1 pytest-qt==4.5.0
+
+      - name: Run tests
+        run: python -m pytest tests -q -p no:cacheprovider
