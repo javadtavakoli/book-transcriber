@@ -2,7 +2,7 @@
 
 ## What shipped
 
-**Writing Parrot (طوطی‌نویس) v0.1.0 for Windows:**
+**Writing Parrot (طوطی‌نویس) v0.1.1 for Windows** (the first release; see "Release result" for why it isn't 0.1.0):
 - **Installer:** a per-user installer (no admin prompt), unsigned, with a Start menu entry, a desktop icon and an uninstaller. The installer screens are in English and Persian.
 - **Name and icon:** the parrot-and-pen icon. On first launch the old BookTranscriber data folder is renamed to the new name.
 - **Downloads folder:** first-run setup lets the user choose where the big downloads go. The app suggests another drive when C: is full. Settings → "Downloads folder…" moves the files safely and offers to delete old ones after "Don't move". If the drive is unplugged, the app says so; it never silently sets up again on C:.
@@ -108,7 +108,8 @@ The Tests workflow passed on Ubuntu, Windows and macOS (Windows is now a require
 ## Release result
 - **First v0.1.0 tag build (run 40141969623):** it failed in the test step with an intermittent Windows "access violation". The cause was old stage 2 code calling `QObject.sender()` in a queued slot after the sending thread had been destroyed. Nothing was published, because the draft step never ran.
 - **Fix:** commit 77afe0b. Runners now bind a per-job token at connect time instead of using `sender()`. It was reviewed and approved, and tests passed on Ubuntu, Windows and macOS.
-- **Ruling:** the v0.1.0 tag was deleted on GitHub and re-created at the fixed commit. That was safe only because nothing had been published. The cost: anyone who fetched the old tag in those minutes sees it move.
+- **Moving the tag was not possible:** deleting the GitHub tag was refused as a destructive action.
+- **Ruling:** the version was bumped to **0.1.1** and the release was made from tag `v0.1.1`. The `v0.1.0` tag stays on GitHub at the commit whose build failed, and no release is attached to it. You may delete it if you like (`git push origin :refs/tags/v0.1.0`). The cost: one unused tag in the list.
 - **Deferred minors from that fix:**
   - The `p.disconnect(self)` line in runners.py now does nothing.
   - The two new stale-signal tests are weak: they don't go through `start()` or exercise the token itself.
