@@ -83,6 +83,30 @@ def test_choose_target_app_folder_returned():
     assert downloads.choose_target(app) == app
 
 
+def test_choose_target_drive_root_always_gets_subfolder(monkeypatch):
+    # A whole drive is never ours, even an empty one: deleting "its" downloads would mean the drive's top level.
+    monkeypatch.setattr(Path, "iterdir", lambda self: iter(()))
+    root = Path(Path.cwd().anchor)
+    assert downloads.choose_target(root) == root / "WritingParrot"
+
+
+def test_delete_downloads_removes_only_the_download_files(tmp_path):
+    root = paths.data_dir()
+    files = [root / "models" / "m" / "model.bin", root / "gpu" / "cudnn.dll", root / "llm" / "helper.gguf"]
+    for f in files:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x")
+    pid = root / "llm" / "server.pid"
+    pid.write_text('{"pid": 1}')
+    paths.settings_file().write_text("{}")
+    (root / "namelists").mkdir()
+    (root / "namelists" / "mine.json").write_text("[]")
+    downloads.delete_downloads(root)
+    assert not any(f.exists() for f in files)
+    assert not (root / "models").exists() and not (root / "gpu").exists()
+    assert pid.exists() and paths.settings_file().exists() and (root / "namelists" / "mine.json").exists()
+
+
 def test_writable(tmp_path):
     assert downloads.writable(tmp_path / "new" / "deep")
     assert list((tmp_path / "new" / "deep").iterdir()) == []

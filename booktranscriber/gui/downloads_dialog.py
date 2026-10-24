@@ -33,6 +33,20 @@ def ask_move(parent, i18n, size: int) -> str:
     return "move" if clicked is move else "dont" if clicked is dont else "cancel"
 
 
+def ask_delete_old(parent, i18n, path: Path, size: int) -> str:
+    """"delete" or "keep" (the default, and what closing the box means)."""
+    tr = i18n.tr
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Question)
+    box.setText(tr("downloads.old_left", path=str(path), size=fmt_bytes(size, i18n.language)))
+    delete = box.addButton(tr("downloads.delete_old"), QMessageBox.DestructiveRole)
+    keep = box.addButton(tr("downloads.keep_old"), QMessageBox.RejectRole)
+    box.setDefaultButton(keep)
+    box.setEscapeButton(keep)
+    box.exec()
+    return "delete" if box.clickedButton() is delete else "keep"
+
+
 def ask_missing(parent, i18n, path: Path) -> str:
     """"retry", "choose" or "close"."""
     tr = i18n.tr
@@ -166,6 +180,12 @@ class DownloadsDialog(QDialog):
             except OSError:
                 self._status(tr("downloads.failed_target"), error=True)
                 return
+            # Switched: the old copy is now only taking up room. Say where it is, and offer to delete it.
+            left = downloads.downloads_size(current)
+            if left and ask_delete_old(self, self.i18n, current, left) == "delete":
+                if self.before_move is not None:
+                    self.before_move()      # a running AI helper keeps its file open (Windows can't delete it)
+                downloads.delete_downloads(current)
             self.repair_needed.emit()
             self.accept()
         elif answer == "move":

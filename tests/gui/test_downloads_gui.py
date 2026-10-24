@@ -159,10 +159,68 @@ def test_move_dialog_dont_move_sets_folder_and_asks_repair(qtbot, monkeypatch, t
     qtbot.addWidget(dlg)
     monkeypatch.setattr(downloads_dialog, "pick_folder", lambda parent, start: new)
     monkeypatch.setattr(downloads_dialog, "ask_move", lambda parent, i18n, size: "dont")
+    asked = []
+
+    def ask_delete(parent, i18n, path, size):
+        assert s.downloads_dir == str(new)      # only once the switch has succeeded
+        asked.append((path, size))
+        return "keep"
+    monkeypatch.setattr(downloads_dialog, "ask_delete_old", ask_delete)
     with qtbot.waitSignal(dlg.repair_needed):
         qtbot.mouseClick(dlg.change_button, Qt.LeftButton)
     assert s.downloads_dir == str(new)
+    assert asked == [(paths.data_dir_path(), 2000)]
     assert (paths.data_dir() / "llm" / "helper.gguf").exists()     # left where it was
+
+
+def test_dont_move_then_delete_removes_only_the_old_downloads(qtbot, monkeypatch, tmp_path):
+    data = paths.data_dir()
+    files = fake_downloads(data)
+    pid = data / "llm" / "server.pid"
+    pid.write_text('{"pid": 1}')
+    (data / "namelists").mkdir()
+    (data / "namelists" / "mine.json").write_text("[]")
+    new = tmp_path / "new"
+    stops = []
+    s = Settings(setup_done=True)
+    dlg = DownloadsDialog(I18n("en"), s, before_move=lambda: stops.append(1))
+    qtbot.addWidget(dlg)
+    monkeypatch.setattr(downloads_dialog, "pick_folder", lambda parent, start: new)
+    monkeypatch.setattr(downloads_dialog, "ask_move", lambda parent, i18n, size: "dont")
+    monkeypatch.setattr(downloads_dialog, "ask_delete_old", lambda parent, i18n, path, size: "delete")
+    with qtbot.waitSignal(dlg.repair_needed):
+        qtbot.mouseClick(dlg.change_button, Qt.LeftButton)
+    assert s.downloads_dir == str(new) and stops == [1]     # the AI helper let go of its file first
+    assert not any(f.exists() for f in files)
+    assert pid.exists() and paths.settings_file().exists() and (data / "namelists" / "mine.json").exists()
+
+
+def test_dont_move_asks_nothing_when_the_old_folder_is_empty(qtbot, monkeypatch, tmp_path):
+    s = Settings(setup_done=True)
+    dlg = DownloadsDialog(I18n("en"), s)
+    qtbot.addWidget(dlg)
+    monkeypatch.setattr(downloads_dialog, "pick_folder", lambda parent, start: tmp_path / "new")
+    monkeypatch.setattr(downloads_dialog, "ask_move", lambda parent, i18n, size: "dont")
+    monkeypatch.setattr(downloads_dialog, "ask_delete_old", lambda *a: pytest.fail("asked"))
+    with qtbot.waitSignal(dlg.repair_needed):
+        qtbot.mouseClick(dlg.change_button, Qt.LeftButton)
+    assert s.downloads_dir == str(tmp_path / "new")
+
+
+def test_dont_move_that_fails_never_offers_to_delete(qtbot, monkeypatch, tmp_path):
+    fake_downloads(paths.data_dir())
+    s = Settings(setup_done=True)
+    dlg = DownloadsDialog(I18n("en"), s)
+    qtbot.addWidget(dlg)
+
+    def broken(settings, folder):
+        raise OSError("drive gone")
+    monkeypatch.setattr(downloads, "set_downloads_dir", broken)
+    monkeypatch.setattr(downloads_dialog, "pick_folder", lambda parent, start: tmp_path / "new")
+    monkeypatch.setattr(downloads_dialog, "ask_move", lambda parent, i18n, size: "dont")
+    monkeypatch.setattr(downloads_dialog, "ask_delete_old", lambda *a: pytest.fail("asked"))
+    qtbot.mouseClick(dlg.change_button, Qt.LeftButton)
+    assert s.downloads_dir is None and (paths.data_dir() / "llm" / "helper.gguf").exists()
 
 
 def test_move_dialog_cancel_question_changes_nothing(qtbot, monkeypatch, tmp_path):
@@ -294,6 +352,19 @@ def test_change_on_repair_run_with_downloads_offers_the_move(qtbot, monkeypatch,
     qtbot.mouseClick(w.setup_view.change_button, Qt.LeftButton)
     assert len(opened) == 1 and opened[0].settings is w.settings
     assert w.setup_view.downloads_target == data
+
+
+def test_change_on_unfinished_first_run_with_downloads_offers_the_move(qtbot, monkeypatch, tmp_path):
+    # Setup stopped half way: the files it fetched so far must move, not be fetched again elsewhere.
+    fake_downloads(paths.data_dir())
+    w = MainWindow(I18n("en"), Settings(setup_done=False))
+    qtbot.addWidget(w)
+    assert w.current_page() == "setup"
+    opened = []
+    monkeypatch.setattr(downloads_dialog, "run_dialog", opened.append)
+    monkeypatch.setattr(downloads_dialog, "pick_folder", lambda parent, start: pytest.fail("setup picked"))
+    qtbot.mouseClick(w.setup_view.change_button, Qt.LeftButton)
+    assert len(opened) == 1 and opened[0].settings is w.settings
 
 
 def test_move_blocked_while_busy(qtbot, monkeypatch, tmp_path):

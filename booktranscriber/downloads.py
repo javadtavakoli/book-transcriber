@@ -39,8 +39,11 @@ def choose_target(picked: Path) -> Path:
     """The picked folder itself when it is empty or ours, else a WritingParrot folder inside it.
 
     Only the marker file, or being the app folder, makes a folder ours: a user's own models/ does not.
+    A drive's root is never ours, even when empty.
     """
     picked = Path(picked)
+    if picked.parent == picked:
+        return picked / FOLDER_NAME
     try:
         if picked.resolve() == paths.data_dir_path().resolve():
             return picked       # back to the default
@@ -261,15 +264,25 @@ def move_downloads(settings: Settings, new_root: Path, progress: Callable[[MoveP
         undo()
         raise
 
-    # Delete exactly what was moved, then the folders it leaves empty; anything else stays.
+    _delete(files, old_root)
+
+
+def _delete(files: list[Path], root: Path) -> None:
+    """Delete exactly these files, then the download folders they leave empty; anything else stays."""
     for src in files:
         try:
             src.unlink()
         except OSError:
             pass
     for sub in DOWNLOAD_SUBDIRS:
-        for dirpath, _dirs, _names in os.walk(old_root / sub, topdown=False):
+        for dirpath, _dirs, _names in os.walk(root / sub, topdown=False):
             try:
                 os.rmdir(dirpath)
             except OSError:     # not empty
                 pass
+
+
+def delete_downloads(root: Path) -> None:
+    """Delete the downloads under root: the same files a move from there would delete (never the pid file)."""
+    root = Path(root)
+    _delete(_files(root), root)

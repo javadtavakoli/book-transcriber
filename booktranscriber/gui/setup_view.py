@@ -260,8 +260,9 @@ class SetupView(QWidget):
         self.llm_note.setText(tr("setup.llm_note", size=fmt_bytes(llm_size, lang)))
 
     def _change_location(self) -> None:
-        if self.settings.setup_done and downloads.downloads_size(paths.downloads_dir_path()) > 0:
-            self.move_requested.emit()      # Settings' move: setup would download it all again
+        if downloads.downloads_size(paths.downloads_dir_path()) > 0:
+            # Settings' move (a repair run, or a first run stopped half way): setup would download it all again
+            self.move_requested.emit()
             return
         picked = downloads_dialog.pick_folder(self, self.downloads_target)
         if picked is None:
