@@ -64,11 +64,10 @@ def model_dir_for(model: str) -> Path:
 
 def run_selftest(model_path: str, device: str, lib_dirs: list[str] | None = None) -> None:
     """Transcribe a moment of noise in a worker process, exactly as a real job would run."""
-    from .gpu import default_lib_dirs, gpu_env
     from .protocol import decode
-    from .worker import worker_command
+    from .worker import worker_command, worker_env
     windows = sys.platform == "win32"
-    env = gpu_env(default_lib_dirs() if lib_dirs is None else lib_dirs, os.environ, windows)
+    env = worker_env(lib_dirs)
     kw = {"creationflags": subprocess.CREATE_NO_WINDOW} if windows else {}
     try:
         r = subprocess.run(worker_command(["--selftest", "--model", model_path, "--device", device]),

@@ -27,6 +27,17 @@ def worker_command(args: list[str]) -> list[str]:
     return [sys.executable, "-m", "booktranscriber.worker", *args]
 
 
+def worker_env(lib_dirs: list[str] | None = None, base=None) -> dict[str, str]:
+    """Environment for a worker child: GPU libraries on the loader path, and (from source) this package importable."""
+    from .gpu import default_lib_dirs, gpu_env
+    base = os.environ if base is None else base
+    env = gpu_env(default_lib_dirs() if lib_dirs is None else lib_dirs, base, sys.platform == "win32")
+    if not getattr(sys, "frozen", False):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env["PYTHONPATH"] = os.pathsep.join([root] + ([base["PYTHONPATH"]] if base.get("PYTHONPATH") else []))
+    return env
+
+
 def probe_audio(path: str) -> float:
     """Fail fast, before the multi-GB model loads, if this isn't decodable audio."""
     import av

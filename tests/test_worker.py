@@ -1,3 +1,4 @@
+import os
 import sys
 from types import SimpleNamespace
 
@@ -125,3 +126,16 @@ def test_worker_command_source_mode(monkeypatch):
 def test_worker_command_frozen(monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     assert worker_command(["--selftest"])[1:] == ["--worker", "--selftest"]
+
+
+def test_worker_env_finds_package_and_libs(monkeypatch):
+    from pathlib import Path
+
+    import booktranscriber
+    from booktranscriber.worker import worker_env
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    env = worker_env(["/libs/a"], {"PYTHONPATH": "/x"})
+    root = str(Path(booktranscriber.__file__).resolve().parent.parent)
+    assert env["PYTHONPATH"].split(os.pathsep) == [root, "/x"]
+    key = "PATH" if sys.platform == "win32" else "LD_LIBRARY_PATH"
+    assert env[key].startswith("/libs/a")
