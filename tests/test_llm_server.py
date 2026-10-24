@@ -92,6 +92,7 @@ def test_gpu_route_passes_no_ngl_and_cpu_route_passes_zero(fake_llama, model, tm
         assert argv[argv.index("-c") + 1] == "4096"
         assert argv[argv.index("--host") + 1] == "127.0.0.1"
         assert "--jinja" in argv
+        assert argv[argv.index("-lv") + 1] == "4"   # default verbosity hides the loading stages
     assert "-ngl" not in gpu_argv
     assert cpu_argv[cpu_argv.index("-ngl") + 1] == "0"
 
@@ -285,3 +286,25 @@ def test_stop_from_another_thread_during_load_is_a_cancel(fake_llama, model, mon
                             lambda: fallbacks.append(1))
     assert fallbacks == [] and calls == ["vulkan"]
     assert _gone(servers[0].pid)
+
+
+@pytest.mark.parametrize("var, proxy", [("HTTP_PROXY", "http://127.0.0.1:9"),
+                                        ("ALL_PROXY", "socks5://127.0.0.1:9")])
+def test_health_poll_ignores_environment_proxy(fake_llama, model, monkeypatch, var, proxy):
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(var, proxy)
+    monkeypatch.setenv(var.lower(), proxy)
+    srv = LlamaServer(fake_llama("ok"), model, gpu=True)
+    try:
+        srv.start(lambda f, eta: None, threading.Event(), timeout=5)
+        assert srv.is_ready()
+    finally:
+        srv.stop()
+
+
+def test_local_client_ignores_environment_proxy(monkeypatch):
+    monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:9")
+    with llm_server.local_client(3) as client:
+        assert client.timeout.read == 3
+        assert client.trust_env is False

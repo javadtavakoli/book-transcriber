@@ -136,7 +136,8 @@ class LlamaServer:
 
     def command(self) -> list[str]:
         cmd = [str(self.binary), "-m", str(self.model), "-c", str(self.ctx),
-               "--host", "127.0.0.1", "--port", str(self.port), "--jinja"]
+               "--host", "127.0.0.1", "--port", str(self.port), "--jinja",
+               "-lv", "4"]   # the loading stages are only logged at verbosity 4
         # On the graphics card llama-server fits as many layers as free memory allows by itself.
         return cmd if self.gpu else cmd + ["-ngl", "0"]
 
@@ -172,7 +173,7 @@ class LlamaServer:
         t0 = time.monotonic()
         next_health, shown, reported = t0, -1.0, t0
         # Poll instead of blocking, so cancelling or closing the window stops loading promptly.
-        with httpx.Client(timeout=2) as client:
+        with local_client(2) as client:
             while True:
                 # stop() from another thread (e.g. the app closing) is a cancel, not a crash to fall back from.
                 if cancel.is_set() or self._proc is not proc:
@@ -212,6 +213,11 @@ class LlamaServer:
         if proc is not None:
             _stop_process(proc, reader)
         _servers.discard(self)
+
+
+def local_client(timeout: float) -> httpx.Client:
+    """An httpx client for the server on 127.0.0.1: ignores proxy settings, which would misroute it."""
+    return httpx.Client(timeout=timeout, trust_env=False)
 
 
 def _healthy(client: httpx.Client, url: str) -> bool:

@@ -1,6 +1,6 @@
 """Stand-in for llama-server: scripted startup log, /health and /v1/chat/completions.
 
-Usage: fake_llama_server.py <mode> --port N [real llama-server arguments, ignored]
+Usage: fake_llama_server.py <mode> --port N [real llama-server arguments, unknown ones ignored]
 Modes: ok, slow (echo answers), fix (echo with one spelling fixed), think (echo after a
 <think> block), http500 (chat fails), oom and crash (exit during load), hang (never ready).
 If FAKE_LLAMA_LOG is set, the argument list is appended to that file as one JSON line.
@@ -102,6 +102,7 @@ def main() -> None:
     p.add_argument("--port", type=int, default=8080)
     p.add_argument("--jinja", action="store_true")
     p.add_argument("-ngl", "--n-gpu-layers", default=None)
+    p.add_argument("-lv", "--verbosity", default=None)
     args, _unknown = p.parse_known_args()
     if os.environ.get("FAKE_LLAMA_LOG"):
         with open(os.environ["FAKE_LLAMA_LOG"], "a", encoding="utf-8") as f:
