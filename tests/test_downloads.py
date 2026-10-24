@@ -33,6 +33,11 @@ def test_downloads_dir_from_settings(tmp_path):
     assert paths.settings_file().parent == paths.data_dir_path() != root
 
 
+def test_relative_downloads_dir_falls_back():
+    _write_settings(downloads_dir="relative/folder")
+    assert paths.downloads_dir_path() == paths.data_dir_path()
+
+
 def test_broken_settings_falls_back():
     paths.settings_file().write_text("{not json", "utf-8")
     assert paths.downloads_dir_path() == paths.data_dir_path()
@@ -58,12 +63,24 @@ def test_choose_target_nonempty_gets_subfolder(tmp_path):
 
 
 def test_choose_target_ours_reused(tmp_path):
-    a, b = tmp_path / "a", tmp_path / "b"
-    (a / "models").mkdir(parents=True)
+    b = tmp_path / "b"
     b.mkdir()
     (b / ".writingparrot").write_text("")
     (b / "other.txt").write_text("")
-    assert downloads.choose_target(a) == a and downloads.choose_target(b) == b
+    assert downloads.choose_target(b) == b
+
+
+def test_choose_target_users_models_folder_not_ours(tmp_path):
+    a = tmp_path / "a"
+    (a / "models").mkdir(parents=True)
+    assert downloads.choose_target(a) == a / "WritingParrot"
+
+
+def test_choose_target_app_folder_returned():
+    app = paths.data_dir()
+    paths.models_dir()
+    paths.settings_file().write_text("{}")
+    assert downloads.choose_target(app) == app
 
 
 def test_writable(tmp_path):
@@ -228,3 +245,57 @@ def test_move_nested_refused(tmp_path):
         downloads.move_downloads(s, old / "models" / "inner", lambda p: None, threading.Event())
     assert e.value.kind == "nested"
     assert not (old / "models" / "inner").exists()
+
+
+def test_move_nested_refused_other_direction(tmp_path):
+    outer = tmp_path / "r"
+    _write_settings(downloads_dir=str(outer / "models" / "inner"))     # old root inside new/models
+    old = _fake_downloads()
+    s = _settings()
+    s.downloads_dir = str(old)
+    save_settings(s, paths.settings_file())
+    with pytest.raises(MoveError) as e:
+        downloads.move_downloads(s, outer, lambda p: None, threading.Event())
+    assert e.value.kind == "nested"
+    assert (old / "models" / "x" / "model.bin").stat().st_size == 3 * MIB
+
+
+def test_move_refuses_existing_files_in_target(tmp_path, registry_calls):
+    old = _fake_downloads()
+    s = _settings()
+    before = load_settings(paths.settings_file())
+    new = tmp_path / "new"
+    (new / "llm" / "models").mkdir(parents=True)
+    (new / "llm" / "models" / "a.gguf").write_bytes(b"users own")
+    with pytest.raises(MoveError) as e:
+        downloads.move_downloads(s, new, lambda p: None, threading.Event())
+    assert e.value.kind == "exists"
+    assert (new / "llm" / "models" / "a.gguf").read_bytes() == b"users own"
+    assert not (new / "models").exists()
+    assert (old / "models" / "x" / "model.bin").stat().st_size == 3 * MIB
+    assert load_settings(paths.settings_file()) == before and registry_calls == []
+
+
+def test_move_target_unreadable_is_move_error(tmp_path, monkeypatch):
+    _fake_downloads()
+    s = _settings()
+
+    def boom(p):
+        raise PermissionError(13, "denied")
+    monkeypatch.setattr(shutil, "disk_usage", boom)
+    with pytest.raises(MoveError) as e:
+        downloads.move_downloads(s, tmp_path / "new", lambda p: None, threading.Event())
+    assert e.value.kind == "target"
+
+
+def test_move_progress_exception_leaves_no_copy(tmp_path):
+    old = _fake_downloads()
+    s = _settings()
+    before = load_settings(paths.settings_file())
+    new = tmp_path / "new"
+
+    def bad(p):
+        raise KeyboardInterrupt
+    with pytest.raises(KeyboardInterrupt):
+        downloads.move_downloads(s, new, bad, threading.Event())
+    _assert_untouched(old, new, before)

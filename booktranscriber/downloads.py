@@ -36,13 +36,18 @@ class MoveProgress:
 
 
 def choose_target(picked: Path) -> Path:
-    """The picked folder itself when it is empty or already ours, else a WritingParrot folder inside it."""
+    """The picked folder itself when it is empty or ours, else a WritingParrot folder inside it.
+
+    Only the marker file, or being the app folder, makes a folder ours: a user's own models/ does not.
+    """
     picked = Path(picked)
     try:
+        if picked.resolve() == paths.data_dir_path().resolve():
+            return picked       # back to the default
         entries = {p.name for p in picked.iterdir()}
     except FileNotFoundError:
         return picked
-    if not entries or MARKER in entries or entries & set(DOWNLOAD_SUBDIRS):
+    if not entries or MARKER in entries:
         return picked
     return picked / FOLDER_NAME
 
@@ -176,15 +181,21 @@ def move_downloads(settings: Settings, new_root: Path, progress: Callable[[MoveP
     and the settings stay as they were. Same-drive moves copy too, to keep one simple path.
     """
     old_root, new_root = paths.downloads_dir_path(), Path(new_root)
-    old_r, new_r = old_root.resolve(), new_root.resolve()
-    if old_r == new_r:
-        return
-    if _nested(old_r, new_r):
-        raise MoveError("nested")
-    files = _files(old_root)
-    total = sum(p.stat().st_size for p in files)
-    needed = int(total * SPACE_MARGIN)
-    free = _free(new_root)
+    try:
+        old_r, new_r = old_root.resolve(), new_root.resolve()
+        if old_r == new_r:
+            return
+        if _nested(old_r, new_r):
+            raise MoveError("nested")
+        files = _files(old_root)
+        targets = [new_root / src.relative_to(old_root) for src in files]
+        if any(os.path.lexists(t) for t in targets):
+            raise MoveError("exists")       # never overwrite (or later delete) a file that was already there
+        total = sum(p.stat().st_size for p in files)
+        needed = int(total * SPACE_MARGIN)
+        free = _free(new_root)
+    except OSError as e:
+        raise MoveError("target") from e
     if free < needed:
         raise MoveError("space", needed, free)
 
@@ -211,10 +222,9 @@ def move_downloads(settings: Settings, new_root: Path, progress: Callable[[MoveP
 
     done = 0
     try:
-        for src in files:
-            dst = new_root / src.relative_to(old_root)
+        for src, dst in zip(files, targets):
             ensure_dir(dst.parent)
-            with open(src, "rb") as fin, open(dst, "wb") as fout:
+            with open(src, "rb") as fin, open(dst, "xb") as fout:     # x: fail rather than overwrite
                 written.append(dst)
                 while True:
                     if cancel.is_set():
@@ -225,26 +235,26 @@ def move_downloads(settings: Settings, new_root: Path, progress: Callable[[MoveP
                     _write_chunk(fout, data)
                     done += len(data)
                     progress(MoveProgress(done, total))
-        for src in files:
-            if (new_root / src.relative_to(old_root)).stat().st_size != src.stat().st_size:
+        for src, dst in zip(files, targets):
+            if dst.stat().st_size != src.stat().st_size:
                 raise MoveError("copy", needed, free)
         before = (settings.whisper_model_path, settings.llm_model_path, settings.downloads_dir)
         settings.whisper_model_path = _moved(settings.whisper_model_path, old_root, new_root)
         settings.llm_model_path = _moved(settings.llm_model_path, old_root, new_root)
         try:
             set_downloads_dir(settings, new_root)
-        except OSError:
+        except BaseException:
             settings.whisper_model_path, settings.llm_model_path, settings.downloads_dir = before
             raise
-    except MoveCancelled:
-        undo()
-        raise
-    except MoveError:
+    except (MoveCancelled, MoveError):
         undo()
         raise
     except OSError as e:
         undo()
         raise MoveError("copy", needed, free) from e
+    except BaseException:       # a failing progress callback, Ctrl+C: still no partial copy left behind
+        undo()
+        raise
 
     # Delete exactly what was moved, then the folders it leaves empty; anything else stays.
     for src in files:

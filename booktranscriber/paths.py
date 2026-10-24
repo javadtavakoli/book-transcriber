@@ -75,7 +75,7 @@ def downloads_dir_path() -> Path:
     """Where the big downloads live (models, GPU libraries, the AI helper), without creating anything.
 
     settings.json's downloads_dir when set, else the app folder. Read straight from the JSON so this
-    module never imports settings; a missing or broken file means the default.
+    module never imports settings; a missing or broken file, or a relative path, means the default.
     """
     import json
     try:
@@ -83,7 +83,7 @@ def downloads_dir_path() -> Path:
         v = data.get("downloads_dir") if isinstance(data, dict) else None
     except (OSError, ValueError):
         v = None
-    return Path(v) if isinstance(v, str) and v else data_dir_path()
+    return Path(v) if isinstance(v, str) and v and Path(v).is_absolute() else data_dir_path()
 
 
 def downloads_dir() -> Path:
