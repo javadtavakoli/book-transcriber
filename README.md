@@ -1,4 +1,4 @@
-# book-transcriber
+# Writing Parrot (طوطی‌نویس)
 
 Turn long spoken-word recordings (book-club sessions, lectures, interviews) into
 plain-text transcripts — **locally and offline**, on your own GPU. Nothing is ever
@@ -54,7 +54,7 @@ Persian (switch with the **فا / EN** button).
   transcription so the speech model has the graphics memory.
 
 The app keeps its downloads and settings in your user data folder
-(`~/.local/share/BookTranscriber` on Linux), not in the project folder. Windows and
+(`~/.local/share/WritingParrot` on Linux), not in the project folder. Windows and
 macOS installers come in a later release.
 
 ---

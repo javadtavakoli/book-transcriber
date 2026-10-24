@@ -2,7 +2,7 @@
 import dataclasses
 
 from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QProgressBar, QStackedLayout, QVBoxLayout,
                                QWidget)
 
@@ -49,9 +49,10 @@ class SetupView(QWidget):
     def _build_welcome(self, page):
         lay = QVBoxLayout(page)
         lay.addStretch(1)
-        icon = QLabel("📚🎙️")
+        icon = QLabel()
+        icon.setPixmap(QPixmap(str(paths.asset("icon.png"))).scaled(
+            96, 96, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         icon.setAlignment(Qt.AlignCenter)
-        icon.setStyleSheet("font-size: 40px;")
         lay.addWidget(icon)
         self.welcome_title = title_label()
         self.welcome_title.setAlignment(Qt.AlignCenter)

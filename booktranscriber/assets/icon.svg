@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <rect width="256" height="256" rx="56" fill="#F3EFE2"/>
+  <!-- shoulder and body -->
+  <path d="M40 256 C40 190 80 160 128 160 C176 160 216 190 216 256 Z" fill="#2FA84F"/>
+  <path d="M120 256 C120 205 150 180 190 178 C214 190 216 230 216 256 Z" fill="#F2B705"/>
+  <!-- head -->
+  <circle cx="118" cy="104" r="68" fill="#2FA84F"/>
+  <!-- crest -->
+  <path d="M96 48 C92 22 112 10 136 14 C124 22 124 32 130 42 C146 22 168 24 176 34 C158 38 152 50 152 62 Z" fill="#E0312D"/>
+  <!-- face patch -->
+  <circle cx="132" cy="108" r="40" fill="#FFFFFF"/>
+  <!-- eye -->
+  <circle cx="130" cy="98" r="15" fill="#1B1B1B"/>
+  <circle cx="135" cy="93" r="5" fill="#FFFFFF"/>
+  <!-- beak -->
+  <path d="M158 92 C204 88 224 112 218 138 C214 150 202 150 196 140 C186 124 172 122 158 124 Z" fill="#E0312D"/>
+  <!-- pen held in the beak, pointing down-left -->
+  <g transform="translate(-2 8) rotate(-30 190 130)">
+    <rect x="180" y="118" width="26" height="86" rx="8" fill="#23304A"/>
+    <rect x="180" y="118" width="26" height="22" rx="8" fill="#F2B705"/>
+    <path d="M180 200 L206 200 L193 226 Z" fill="#23304A"/>
+  </g>
+</svg>

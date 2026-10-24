@@ -11,7 +11,7 @@ LANGUAGES = ("en", "fa")
 
 STRINGS: dict[str, dict[str, str]] = {
     "en": {
-        "app.title": "Book Transcriber",
+        "app.title": "Writing Parrot",
         "lang.switch": "فا",
 
         "setup.welcome.title": "Welcome!",
@@ -174,7 +174,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "review.saved": "Saved as: {path}",
     },
     "fa": {
-        "app.title": "کتاب‌نویس",
+        "app.title": "طوطی‌نویس",
         "lang.switch": "EN",
 
         "setup.welcome.title": "خوش آمدید!",

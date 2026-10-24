@@ -32,7 +32,7 @@ def test_language_toggle_flips_direction_and_saves(qtbot):
     assert w.lang_button.text() == "فا"
     qtbot.mouseClick(w.lang_button, Qt.LeftButton)
     assert QApplication.layoutDirection() == Qt.RightToLeft and w.lang_button.text() == "EN"
-    assert w.windowTitle() == "کتاب‌نویس"
+    assert w.windowTitle() == "طوطی‌نویس"
     assert load_settings(paths.settings_file()).ui_language == "fa"
     qtbot.mouseClick(w.lang_button, Qt.LeftButton)
     assert QApplication.layoutDirection() == Qt.LeftToRight
