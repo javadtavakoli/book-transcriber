@@ -1,6 +1,5 @@
 """First-run setup: download what this machine needs, with one aggregated progress stream."""
 import dataclasses
-import os
 import shutil
 import subprocess
 import sys

@@ -2,13 +2,14 @@
 import os
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QStackedWidget,
-                               QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox,
+                               QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from .. import paths
 from ..i18n import I18n
 from ..settings import Settings, save_settings
 from .runners import SetupRunner, TranscribeRunner
+from .setup_view import SetupView
 
 PAGES = ("setup", "home", "flow", "export", "review")
 
@@ -36,6 +37,10 @@ class MainWindow(QMainWindow):
         self.settings_button = QToolButton()
         self.settings_button.setText("⚙")
         self.settings_button.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(self.settings_button)
+        self.repair_action = menu.addAction("")
+        self.repair_action.triggered.connect(self.open_repair)
+        self.settings_button.setMenu(menu)
         top.addWidget(self.settings_button)
         self.lang_button = QToolButton()
         self.lang_button.clicked.connect(self._toggle_language)
@@ -48,6 +53,9 @@ class MainWindow(QMainWindow):
         self.pages: dict[str, QWidget] = {}
         for name in PAGES:
             self.set_page_widget(name, QWidget())
+        self.setup_view = SetupView(i18n, settings, self.setup_runner)
+        self.setup_view.completed.connect(self._on_setup_completed)
+        self.set_page_widget("setup", self.setup_view)
 
         i18n.language_changed.connect(self._on_language)
         self._on_language(i18n.language)
@@ -71,6 +79,19 @@ class MainWindow(QMainWindow):
         w = self.stack.currentWidget()
         return next(n for n, p in self.pages.items() if p is w)
 
+    def open_repair(self) -> None:
+        if self.busy():
+            return
+        self.setup_view.settings = self.settings
+        self.setup_view.refresh()
+        self.show_page("setup")
+
+    def _on_setup_completed(self, new: Settings) -> None:
+        for f, v in vars(new).items():
+            setattr(self.settings, f, v)
+        self.save_settings()
+        self.show_page("home")
+
     def busy(self) -> bool:
         return self.transcriber.is_running() or self.setup_runner.is_running()
 
@@ -87,6 +108,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(self.i18n.tr("app.title"))
         self.title_label.setText(self.i18n.tr("app.title"))
         self.lang_button.setText(self.i18n.tr("lang.switch"))
+        self.settings_button.setToolTip(self.i18n.tr("settings.menu"))
+        self.repair_action.setText(self.i18n.tr("settings.repair"))
         for page in self.pages.values():
             if hasattr(page, "retranslate"):
                 page.retranslate()
