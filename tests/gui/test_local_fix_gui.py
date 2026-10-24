@@ -429,3 +429,47 @@ def test_starting_again_while_cancelled_part_finishes_does_not_freeze(qtbot, run
     qtbot.waitUntil(lambda: bool(got) and not runner.is_running(), timeout=5000)
     qtbot.wait(200)
     assert len(got) == 1 and runner.server_loaded()
+
+
+def test_download_shows_words_and_can_be_cancelled(qtbot, settings, raw_file, monkeypatch, request):
+    import threading
+    monkeypatch.setattr(flow_view, "detect_system", lambda d: OK)
+    started = threading.Event()
+
+    def waits_for_cancel(model_key, backend, s, on_progress, cancel, **kw):
+        on_progress(SetupProgress("llm", 1_200_000_000, 4_800_000_000, 1_200_000_000, 4_800_000_000, 4e6, 900))
+        started.set()
+        cancel.wait(10)
+        raise SetupError("cancelled")
+    monkeypatch.setattr(setup_runner, "run_llm_setup", waits_for_cancel)
+    settings.llm_model_path = None
+    v = FlowView(I18n("en"), settings, FakeTranscriber())
+    qtbot.addWidget(v)
+    v.show()
+    request.addfinalizer(v.llm_download.stop_and_wait)    # never leave the download thread running
+    v.open_result(RecentItem(str(raw_file.with_name("s12.m4a")), str(raw_file), None, "t"), from_recents=True)
+    assert v.local_status.isHidden() and v.local_cancel_button.isHidden()
+    got = []
+    v.local_requested.connect(lambda *a: got.append(a))
+    v.local_button.click()
+    qtbot.waitUntil(lambda: "1.2 GB of 4.8 GB" in v.local_status.text(), timeout=5000)
+    assert v.local_status.text().startswith("Downloading the AI helper…")
+    assert "about 15 min left" in v.local_status.text()
+    assert not v.local_status.isHidden() and not v.local_cancel_button.isHidden()
+    v.local_cancel_button.click()
+    qtbot.waitUntil(lambda: not v.llm_download.is_running() and v.local_button.isEnabled(), timeout=5000)
+    assert v.local_status.isHidden() and v.local_bar.isHidden() and v.local_cancel_button.isHidden()
+    assert v.local_problem.isHidden() and got == []
+    assert v.local_button.text().startswith("Download the AI helper")
+
+
+def test_stale_server_reaped_before_transcription(qtbot, window, raw_file, monkeypatch):
+    from booktranscriber.gui import main_window
+    order = []
+    monkeypatch.setattr(main_window, "reap_stale", lambda: order.append("reap") or False)
+    monkeypatch.setattr(window.transcriber, "start", lambda job: order.append("start"))
+    audio = raw_file.with_name("next.m4a")
+    audio.write_bytes(b"x")
+    window.home_view.handle_files([str(audio)])
+    window.flow_view.skip_button.click()
+    assert order == ["reap", "start"]

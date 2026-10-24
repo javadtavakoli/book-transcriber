@@ -317,3 +317,67 @@ def test_first_load_uses_guess_for_fraction_but_not_eta():
     assert est.fraction(0.30, 10) == 0.30
     assert est.fraction(0.30, 1000) == 0.97
     assert est.eta(90) is None
+
+
+# --- a llama-server left behind by a crashed app is stopped next time ---------------------
+def _pid_file():
+    from booktranscriber import paths
+    return paths.data_dir() / "llm" / "server.pid"
+
+
+def test_pid_file_written_on_start_and_removed_on_stop(fake_llama, model):
+    srv = LlamaServer(fake_llama("ok"), model, gpu=True)
+    srv.start(lambda f, eta: None, threading.Event(), timeout=20)
+    data = json.loads(_pid_file().read_text("utf-8"))
+    assert data == {"pid": srv.pid, "binary": os.path.abspath(fake_llama("ok"))}
+    srv.stop()
+    assert not _pid_file().exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Windows reaping comes with the Windows stage")
+def test_reap_stale_stops_a_server_left_by_a_crash(fake_llama, model):
+    srv = LlamaServer(fake_llama("ok"), model, gpu=True)
+    srv.start(lambda f, eta: None, threading.Event(), timeout=20)
+    proc = srv._proc
+    # Simulate the app dying: nothing in this process remembers the server any more.
+    srv._finalizer.detach()
+    srv._proc = None
+    llm_server._servers.discard(srv)
+    try:
+        assert _pid_file().exists() and proc.poll() is None
+        assert llm_server.reap_stale() is True
+        assert proc.wait(10) is not None
+        assert not _pid_file().exists()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Windows reaping comes with the Windows stage")
+def test_reap_stale_leaves_an_unrelated_process_alone(tmp_path):
+    import subprocess
+    other = subprocess.Popen(["sleep", "30"])
+    try:
+        _pid_file().parent.mkdir(parents=True, exist_ok=True)
+        _pid_file().write_text(json.dumps({"pid": other.pid, "binary": str(tmp_path / "llama-server")}), "utf-8")
+        assert llm_server.reap_stale() is False
+        assert other.poll() is None and not _pid_file().exists()
+    finally:
+        other.kill()
+        other.wait()
+
+
+@pytest.mark.parametrize("content", ["not json", '{"pid": "x"}', "[]", None])
+def test_reap_stale_cleans_up_dead_or_garbage_files(content):
+    import subprocess
+    import sys
+    _pid_file().parent.mkdir(parents=True, exist_ok=True)
+    if content is None:     # a process that has already exited
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        content = json.dumps({"pid": dead.pid, "binary": sys.executable})
+    _pid_file().write_text(content, "utf-8")
+    assert llm_server.reap_stale() is False
+    assert not _pid_file().exists()
+    assert llm_server.reap_stale() is False      # no file at all: nothing to do

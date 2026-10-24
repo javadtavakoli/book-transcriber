@@ -1,5 +1,8 @@
 """Runs llama-server as a child process: loading progress from its log, CPU fallback, no orphans."""
 import atexit
+import json
+import os
+import signal
 import socket
 import subprocess
 import sys
@@ -12,9 +15,10 @@ from typing import Callable
 
 import httpx
 
+from . import paths
 from .downloader import DownloadCancelled
 from .llm_sources import server_binary
-from .settings import Settings
+from .settings import Settings, write_json_atomic
 
 # Startup log lines (matched by substring) and how far along loading is when each appears.
 LOAD_STAGES: list[tuple[str, float]] = [
@@ -110,6 +114,115 @@ def _stop_process(proc: subprocess.Popen, reader: threading.Thread | None) -> No
             proc.wait()
     if reader is not None:
         reader.join(5)
+    _remove_pid_file(proc.pid)
+
+
+# --- a server left behind by an app that crashed or was killed ---------------------------
+# atexit and the finalizer only run on a normal exit. After a crash the server would keep ~5 GB of
+# graphics memory and the next transcription would fail, so its pid is written down and the
+# next start of the app (and every transcription) stops it.
+def _pid_file() -> Path:
+    return paths.data_dir() / "llm" / "server.pid"
+
+
+def _write_pid_file(pid: int, binary: Path) -> None:
+    try:
+        _pid_file().parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(_pid_file(), {"pid": pid, "binary": os.path.abspath(binary)})
+    except OSError:
+        pass
+
+
+def _remove_pid_file(pid: int | None = None) -> None:
+    """Remove the pid file; with a pid, only if it still names that process."""
+    f = _pid_file()
+    try:
+        if pid is not None and json.loads(f.read_text("utf-8")).get("pid") != pid:
+            return
+        f.unlink()
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+def _command_line(pid: int) -> list[str] | None:
+    if sys.platform.startswith("linux"):
+        try:
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            return None
+        return [a.decode("utf-8", "replace") for a in raw.split(b"\0") if a] or None
+    if sys.platform == "darwin":
+        try:
+            r = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return [r.stdout.strip()] if r.returncode == 0 and r.stdout.strip() else None
+    return None
+
+
+def _is_server(pid: int, binary: str) -> bool:
+    """Whether pid is still that llama-server, not an unrelated process that got the pid since."""
+    args = _command_line(pid)
+    if not args:
+        return False
+    if sys.platform == "darwin":    # one string; the binary leads it, or follows an interpreter
+        return args[0].startswith(binary) or args[0].split(" ", 1)[-1].startswith(binary)
+    real = os.path.realpath(binary)
+    # The binary itself, or a script run by its interpreter (the test fake).
+    return any(os.path.realpath(a) == real for a in args[:2])
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:    # a zombie has exited already (only its parent hasn't collected it)
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return True
+
+
+def _kill(pid: int) -> None:
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if not _alive(pid):
+            return
+        time.sleep(0.1)
+    os.kill(pid, signal.SIGKILL)
+
+
+def reap_stale() -> bool:
+    """Stop a llama-server left running by an earlier run of the app. True if one was stopped.
+
+    Kills only a live process whose command line is still the recorded binary (a pid can be
+    reused). Never raises. Not on Windows yet.
+    """
+    f = _pid_file()
+    if not f.exists():
+        return False
+    try:
+        data = json.loads(f.read_text("utf-8"))
+        pid, binary = data["pid"], data["binary"]
+        if not isinstance(pid, int) or not isinstance(binary, str):
+            raise ValueError(data)
+    except (OSError, ValueError, KeyError, TypeError):
+        _remove_pid_file()
+        return False
+    if any(s.pid == pid for s in list(_servers)):
+        return False    # this app's own running server, not a stale one
+    try:
+        if os.name != "posix" or pid <= 0 or not _alive(pid) or not _is_server(pid, binary):
+            return False
+        _kill(pid)
+        return True
+    except OSError:
+        return False
+    finally:
+        _remove_pid_file()
 
 
 # Every started server, so the app never exits leaving one running.
@@ -157,6 +270,7 @@ class LlamaServer:
                                     stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace", **kw)
         except OSError as e:   # a build that can't even be executed is as broken as one that crashes
             raise LlmStartError("crash", str(e)) from e
+        _write_pid_file(proc.pid, self.binary)
         reader = threading.Thread(target=_read_log, args=(proc.stdout, log), daemon=True)
         reader.start()
         with self._lock:

@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow, Q
 
 from .. import paths
 from ..i18n import I18n
+from ..llm_server import reap_stale
 from ..settings import Settings, save_settings
 from .runners import LocalFixRunner, SetupRunner, TranscribeRunner
 from .export_view import ExportView
@@ -64,7 +65,7 @@ class MainWindow(QMainWindow):
         self.setup_view.completed.connect(self._on_setup_completed)
         self.set_page_widget("setup", self.setup_view)
         self.home_view = HomeView(i18n, settings)
-        self.flow_view = FlowView(i18n, settings, self.transcriber, before_transcribe=self.local_runner.stop_server)
+        self.flow_view = FlowView(i18n, settings, self.transcriber, before_transcribe=self._free_graphics_card)
         self.home_view.audio_selected.connect(self._open_audio)
         self.home_view.recent_opened.connect(self._open_recent)
         self.flow_view.back_home.connect(self._go_home)
@@ -150,6 +151,11 @@ class MainWindow(QMainWindow):
         self.review_view.load(lv.raw_path, lv.lines, fixes, lv.language, local=True)
         self.review_back = "flow"
         self.show_page("review")
+
+    def _free_graphics_card(self) -> None:
+        """Before a transcription: Whisper and the AI helper don't both fit in the graphics memory."""
+        self.local_runner.stop_server()
+        reap_stale()    # one left behind by an earlier run that crashed
 
     def _go_home(self) -> None:
         self.home_view.refresh_recents()

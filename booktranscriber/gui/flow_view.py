@@ -57,6 +57,7 @@ class FlowView(QWidget):
         self.llm_download = SetupRunner(self)
         self._llm_pick: tuple[str, str] | None = None
         self._download_for = None
+        self._llm_progress = None     # the download's last SetupProgress, to show in words
         self.audio = None
         self.job: TranscribeJob | None = None
         self.item: RecentItem | None = None
@@ -396,6 +397,16 @@ class FlowView(QWidget):
         self.local_bar.setMaximumHeight(8)
         self.local_bar.hide()
         lay.addWidget(self.local_bar)
+        download_row = QHBoxLayout()
+        self.local_status = QLabel()
+        self.local_status.setObjectName("local_status")
+        self.local_status.hide()
+        self.local_cancel_button = secondary_button()
+        self.local_cancel_button.clicked.connect(self._cancel_download)
+        self.local_cancel_button.hide()
+        download_row.addWidget(self.local_status, 1)
+        download_row.addWidget(self.local_cancel_button)
+        lay.addLayout(download_row)
         self.local_problem = QLabel()
         self.local_problem.setWordWrap(True)
         self.local_problem.setStyleSheet("color: #c0392b;")
@@ -424,7 +435,7 @@ class FlowView(QWidget):
 
     def _update_local_button(self) -> None:
         tr = self.i18n.tr
-        if self.llm_ready() or self.llm_download.is_running():
+        if self.llm_ready():
             first = tr("result.local")
         else:
             size = MODELS[self._llm_choice()[0]].size + LLM_RUNTIME_ESTIMATE
@@ -442,19 +453,47 @@ class FlowView(QWidget):
         key, backend = self._llm_choice()
         self._download_for = self.item
         self.local_problem.hide()
-        self.local_bar.setValue(0)
-        self.local_bar.show()
         self.local_button.setEnabled(False)
+        self._llm_progress = None
+        self._show_download(True)
         self.llm_download.start_llm(key, backend, self.settings)
 
+    def _show_download(self, on: bool) -> None:
+        if on:
+            self.local_bar.setValue(0)
+            self._update_download_text()
+        for w in (self.local_bar, self.local_status, self.local_cancel_button):
+            w.setVisible(on)
+
+    def _update_download_text(self) -> None:
+        tr, lang = self.i18n.tr, self.i18n.language
+        p = self._llm_progress
+        if p is None:
+            total = MODELS[self._llm_choice()[0]].size + LLM_RUNTIME_ESTIMATE
+            done, eta = 0, None
+        else:
+            total, done, eta = p.overall_total, p.overall_done, p.eta_seconds
+        text = tr("result.downloading", done=fmt_bytes(done, lang), total=fmt_bytes(total, lang))
+        if eta is not None:
+            text += " · " + tr("flow.eta", time=fmt_duration(eta, lang))
+        self.local_status.setText(text)
+
     def _on_llm_progress(self, p) -> None:
+        self._llm_progress = p
         self.local_bar.setValue(int(100 * p.overall_done / p.overall_total) if p.overall_total else 0)
+        self._update_download_text()
+
+    def _cancel_download(self) -> None:
+        """Stop the download (it continues where it stopped next time). The button comes back once it has stopped."""
+        self._download_for = None
+        self._show_download(False)
+        self.llm_download.pause()
 
     def _on_llm_downloaded(self, new) -> None:
         for f in ("llm_model", "llm_model_path", "llm_backend"):
             setattr(self.settings, f, getattr(new, f))
         save_settings(self.settings, paths.settings_file())
-        self.local_bar.hide()
+        self._show_download(False)
         self.local_button.setEnabled(True)
         self._update_local_button()
         # Continue to the fix, unless the person has moved on to something else meanwhile.
@@ -463,8 +502,9 @@ class FlowView(QWidget):
         self._download_for = None
 
     def _on_llm_failed(self, kind: str) -> None:
-        self.local_bar.hide()
+        self._show_download(False)
         self.local_button.setEnabled(True)
+        self._update_local_button()
         self._download_for = None
         if kind != "cancelled":
             self.local_problem.show()
@@ -524,6 +564,9 @@ class FlowView(QWidget):
         self.choose_label.setText(tr("result.choose"))
         if self.item:
             self._update_local_button()
+        if not self.local_status.isHidden():
+            self._update_download_text()
+        self.local_cancel_button.setText(tr("flow.cancel"))
         self.export_button.setText(tr("result.export"))
         self.export_hint.setText(tr("result.export_hint"))
         self.keep_button.setText(tr("result.just_save"))

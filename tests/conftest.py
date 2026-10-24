@@ -37,8 +37,11 @@ def fake_llama(tmp_path):
             launcher.write_text(f'@"{sys.executable}" "{FAKE_LLAMA}" {mode} %*\r\n')
         else:
             launcher = tmp_path / f"llama-server-{mode}"
-            # exec, so the server's pid is the fake itself and terminate() reaches it.
-            launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{FAKE_LLAMA}" {mode} "$@"\n')
+            # A Python script run directly: the server's pid is the fake itself (terminate() reaches it),
+            # and its command line holds the launcher's path, like a real llama-server's would.
+            launcher.write_text(f"#!{sys.executable}\nimport runpy, sys\n"
+                                f"sys.argv = [{str(FAKE_LLAMA)!r}, {mode!r}] + sys.argv[1:]\n"
+                                f"runpy.run_path({str(FAKE_LLAMA)!r}, run_name='__main__')\n")
             launcher.chmod(0o755)
         return launcher
 
