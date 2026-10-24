@@ -110,11 +110,11 @@ def test_replaced_word_still_allowed():
 
     Sizes: take each `size` from the GitHub release API once (`GET https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b11539`) and hard-code it.
     macOS has no separate CPU asset: the Metal build runs on the CPU with `-ngl 0`, so `("macos","cpu")` maps to the same asset as Metal.
-  - `@dataclass(frozen=True) LlmModel(key: str, repo: str, revision: str, filename: str, size: int, sha256: str, min_vram_mb: int, min_ram_mb: int)`
+  - `@dataclass(frozen=True) LlmModel(key: str, repo: str, revision: str, filename: str, size: int, sha256: str, min_vram_mb: int, min_mac_ram_mb: int)`
   - `MODELS: dict[str, LlmModel]`:
     - `"gemma-4-e4b"`: repo `unsloth/gemma-4-E4B-it-GGUF`, revision `bfc15c382204943c3a8fff0c750b94ae2364d7a3`, file `gemma-4-E4B-it-IQ4_XS.gguf`, size `4715416704`, sha256 `0847f7300471e9a61abaeb46b45b3d61e393af8fa6d6aa70c563623773670dd9`
     - `"gemma-4-12b"`: repo `unsloth/gemma-4-12b-it-GGUF`, revision `fc034cfff751157913579611efad8462ac1be606`, file `gemma-4-12b-it-IQ4_XS.gguf`, size `6375734080`, sha256 `b0037d0e0de0290177045ca214b2a0fb1079d18bde57842b3ca32f5b0cd76774`
-    - Each entry's `min_vram_mb` and `min_ram_mb` come from §5.4's tier table (filled in by the 12B evaluation).
+    - Tiers (spec §5.4): `"gemma-4-12b"` needs a GPU with ≥ 10 000 MB VRAM, or macOS with ≥ 24 GB RAM. `"gemma-4-e4b"` needs a GPU with ≥ 5 000 MB, or macOS with ≥ 12 GB RAM. Store these as `min_vram_mb` / `min_mac_ram_mb` fields instead of `min_ram_mb`.
   - `choose_backend(info: SystemInfo) -> str`: `"metal"` on macOS, otherwise `"vulkan"`. The CPU route is only a runtime fallback.
   - `choose_llm(info: SystemInfo) -> tuple[str | None, bool]`: `(model_key, recommended)`. It picks the largest model whose tier the machine meets. A machine meeting no tier gets `("gemma-4-e4b", False)` (downloadable, but the checkbox is unticked).
 - Produces (`syscheck.py`): `total_ram_bytes() -> int` (Linux `os.sysconf`; Windows `GlobalMemoryStatusEx` via ctypes; macOS `sysctl -n hw.memsize`; 0 on failure). `SystemInfo` gains `ram_bytes: int = 0`, and `detect_system` fills it in.
@@ -122,7 +122,7 @@ def test_replaced_word_still_allowed():
 - [ ] **Step 1: Failing tests:**
   - `test_runtime_assets_cover_every_os_backend`: keys ⊇ the five above; every `sha256` is 64 hex characters.
   - `test_choose_backend`: macos → metal; linux and windows → vulkan, with or without a GPU.
-  - `test_choose_llm_tiers`: parametrize over the tier table rows, including no GPU with 8 GB RAM → `("gemma-4-e4b", False)`.
+  - `test_choose_llm_tiers`: cases RTX 4050 (6141 MB) → ("gemma-4-e4b", True); 12 288 MB → ("gemma-4-12b", True); macOS 32 GB → ("gemma-4-12b", True); macOS 16 GB → ("gemma-4-e4b", True); macOS 8 GB → ("gemma-4-e4b", False); Linux without GPU, 64 GB RAM → ("gemma-4-e4b", False).
   - `test_total_ram_bytes_positive`: `> 0` on this machine.
 - [ ] **Step 2:** Run → FAIL.
 - [ ] **Step 3:** Implement.
@@ -214,7 +214,7 @@ def test_replaced_word_still_allowed():
 - `class LlamaServer`:
   - `__init__(binary: Path, model: Path, gpu: bool, ctx: int = 8192)`
   - `start(on_progress: Callable[[float, float | None], None], cancel: threading.Event, timeout: float = 1800) -> None`
-    - Spawns with `-m model -c ctx --host 127.0.0.1 --port <free> --jinja` plus `-ngl 99` (GPU) or `-ngl 0` (CPU). On Windows it uses `CREATE_NO_WINDOW`.
+    - Spawns with `-m model -c ctx --host 127.0.0.1 --port <free> --jinja`. On the GPU route no `-ngl` is passed, so llama-server fits layers to free memory itself (spec §5.4); on the CPU route it passes `-ngl 0`. On Windows it uses `CREATE_NO_WINDOW`.
     - Reads stderr in a thread and polls `/health` every 0.5 s until `{"status":"ok"}`.
     - On process exit before ready it raises `LlmStartError`: kind `"memory"` if the stderr tail contains `out of memory`, `ErrorOutOfDeviceMemory`, `failed to allocate` or `unable to allocate`; else `"crash"`.
     - On cancel it kills the process and raises `DownloadCancelled`.
@@ -222,7 +222,7 @@ def test_replaced_word_still_allowed():
 - `start_with_fallback(settings: Settings, on_progress, cancel, on_fallback: Callable[[], None]) -> LlamaServer`:
   - Tries the GPU binary first.
   - On a `"crash"` start error, or a missing GPU binary, it calls `on_fallback()` and retries `server_binary("cpu")` with `gpu=False`.
-  - `"memory"` is not retried on the CPU when RAM is below `MODELS[key].min_ram_mb`; it raises.
+  - `"memory"` raises without retrying (the CPU route needs at least as much memory).
   - Stores the measured `load_seconds` into `settings.llm_load_seconds`.
 - `tests/fake_llama_server.py <mode> --port N ...`: prints scripted log lines with delays and serves `/health` (503 until ready, then ok) and `/v1/chat/completions` (echo mode: returns the input lines unchanged; `fix` mode replaces `انقاشی` → `نقاشی`). Modes: `ok`, `slow`, `oom`, `crash`, `hang`, `http500`, `think`.
 

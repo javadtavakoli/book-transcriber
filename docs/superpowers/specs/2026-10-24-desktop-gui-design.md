@@ -178,7 +178,19 @@ Filler words and colloquial speech are kept.
 |---|---|---|---|---|
 | Qwen 3.5 4B Q4_K_M | 2.7 GB | 217–302 s | 93 s | 11 changes, mostly half-space spacing; missed every real error. **Rejected.** |
 | Gemma 4 E4B IQ4_XS | 4.7 GB | 105 s | 29 s | Export prompt: no changes. Local prompt: 29 changes, about 13 right, about 8 wrong (one dropped a word), several unsure; missed «عدویات», «علی رزا». |
-| Gemma 4 12B IQ4_XS | 6.4 GB | *pending* | *pending* | *pending* |
+| Gemma 4 12B IQ4_XS | 6.4 GB | 81 s | 356 s | Partial offload (4.6 GB on GPU, rest on CPU). About 20 right («گادلی»→«گالری», «علی رزا»→«علی رضا», «عنر»→«هنر», «سورالیست»→«سورئالیسم»), about 9 wrong (one changed tense). Better quality, but about 12× slower than E4B on a 6 GB card. |
+
+**Tiers** (`llm_catalog.choose_llm`; my call from these results):
+
+| Computer | Model | Pre-ticked in setup |
+|---|---|---|
+| GPU ≥ 10 000 MB VRAM, or macOS with ≥ 24 GB RAM | Gemma 4 12B | yes |
+| GPU ≥ 5 000 MB VRAM, or macOS with ≥ 12 GB RAM | Gemma 4 E4B | yes |
+| Anything else | Gemma 4 E4B (CPU) | no; online route recommended |
+
+- Let llama-server fit layers to free memory itself (no `-ngl` on the GPU route). This worked for the 12B model, which doesn't fit in 6 GB. `-ngl 0` forces the CPU fallback.
+- "GPU" here means `syscheck` found one. Non-NVIDIA GPUs aren't detected yet, so on Windows and Linux without NVIDIA the tier falls to "anything else" while the Vulkan build is still tried first. Better detection is for the Windows stage.
+
 
 ## 6. Architecture
 
