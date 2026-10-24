@@ -182,6 +182,8 @@ Filler words and colloquial speech are kept.
 
 End-to-end with the app's own code (Gemma 4 E4B): load 102–106 s; the 5-minute transcript fixed in 32 s; 30 lines fixed, 65 unchanged, 1 rejected by the dropped-word guardrail.
 
+Final real run (app code, RTX 4050): Vulkan load 59 s, 5-minute transcript fixed in 26 s; forced CPU fallback loads in 4 s (the slow part of a GPU load is copying the model onto the card) and answers about 4 s per line; a hard-killed app's leftover llama-server is stopped by `reap_stale()` on the next start.
+
 **Tiers** (`llm_catalog.choose_llm`; my call from these results):
 
 | Computer | Model | Pre-ticked in setup |
