@@ -35,7 +35,10 @@ def smoke(out_path: str | None) -> int:
     import importlib
     import os
     import traceback
+    import tempfile
     from .. import __version__
+    if not os.environ.get("BT_DATA_DIR"):   # a manual --smoke must not create the real data folder
+        os.environ["BT_DATA_DIR"] = tempfile.mkdtemp(prefix="wp-smoke-")
     try:
         for name in ("ctranslate2", "av", "faster_whisper", "onnxruntime", "httpx"):
             importlib.import_module(name)

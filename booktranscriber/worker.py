@@ -157,13 +157,12 @@ def ensure_stdio() -> None:
     for name, fd in (("stdout", 1), ("stderr", 2)):
         if getattr(sys, name) is not None:
             continue
-        stream = None
         try:
             if sys.platform == "win32":
                 import msvcrt
-                msvcrt.get_osfhandle(fd)    # raises if the parent gave us no handle
-            else:
-                os.fstat(fd)
+                if msvcrt.get_osfhandle(fd) < 0:     # -2: the fd exists but the parent gave it no handle
+                    raise OSError(fd, "no inherited handle")
+            # fdopen fstat()s the fd, so a closed one raises here
             stream = os.fdopen(fd, "w", encoding="utf-8", buffering=1, closefd=False)
         except OSError:
             stream = open(os.devnull, "w", encoding="utf-8")

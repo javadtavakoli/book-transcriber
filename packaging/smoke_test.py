@@ -26,7 +26,7 @@ def check_gui(exe: Path, work: Path, env: dict) -> int:
     out = work / "smoke.txt"
     try:
         r = subprocess.run([str(exe), "--smoke", "--smoke-out", str(out)], env=env,
-                           capture_output=True, text=True, timeout=180, creationflags=NO_WINDOW)
+                           capture_output=True, encoding="utf-8", errors="replace", timeout=180, creationflags=NO_WINDOW)
     except subprocess.TimeoutExpired:
         return fail("--smoke did not exit within 180 s")
     text = out.read_text(encoding="utf-8") if out.is_file() else ""
@@ -55,10 +55,14 @@ def check_worker(exe: Path, work: Path, env: dict) -> int:
         if event.get("type") == "error" and event.get("kind") == "not_found":
             print(f"worker: {line}", flush=True)
             return 0
-    return fail(f"no not_found error line (exit {p.returncode})\nstdout: {out!r}\nstderr: {err.decode('utf-8', 'replace')}")
+    return fail(f"no not_found error line (exit {p.returncode})\nstdout: {out.decode('utf-8', 'replace')}\nstderr: {err.decode('utf-8', 'replace')}")
 
 
 def main(argv: list[str]) -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")    # a cp1252 CI console can't print Persian paths
+    except Exception:
+        pass
     if len(argv) != 1:
         print(__doc__)
         return 2
@@ -69,7 +73,7 @@ def main(argv: list[str]) -> int:
     try:
         app = tmp / "طوطی تست"
         shutil.copytree(dist, app, symlinks=True)
-        work = tmp / "work"
+        work = tmp / "پوشه کار"      # non-ASCII --audio and --out paths too
         (work / "data").mkdir(parents=True)
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen", BT_DATA_DIR=str(work / "data"))
         start = time.time()

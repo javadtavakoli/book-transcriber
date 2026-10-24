@@ -159,5 +159,25 @@ def test_ensure_stdio_rebinds_none(monkeypatch):
     ensure_stdio()
     assert sys.stdout is not None and sys.stderr is not None
     sys.stdout.write("")
-    sys.stderr.write("x")
+    sys.stderr.write("")
     sys.stderr.flush()
+
+
+def test_ensure_stdio_falls_back_to_devnull(monkeypatch):
+    from booktranscriber.worker import ensure_stdio
+
+    def no_fd(*a, **k):
+        raise OSError(9, "Bad file descriptor")
+    monkeypatch.setattr(os, "fdopen", no_fd)
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    ensure_stdio()
+    streams = (sys.stdout, sys.stderr)
+    try:
+        for s in streams:
+            assert s.name == os.devnull
+            s.write("dropped")
+            s.flush()
+    finally:
+        for s in streams:
+            s.close()
