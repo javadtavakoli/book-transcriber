@@ -26,21 +26,24 @@ def newer_version(current: str, latest_tag: str) -> str | None:
 def check_latest(client: httpx.Client | None = None, timeout=5) -> str | None:
     """The latest published release's tag, or None on any error."""
     own = client is None
-    # trust_env: unlike the localhost client, a proxy the user has set up is wanted here.
-    client = client or httpx.Client(trust_env=True, timeout=timeout, follow_redirects=True)
     try:
-        r = client.get(RELEASES_API, headers={"User-Agent": f"WritingParrot/{__version__}",
-                                              "Accept": "application/vnd.github+json"})
-        r.raise_for_status()
-        tag = r.json().get("tag_name")
-        return tag if isinstance(tag, str) else None
-    except (httpx.HTTPError, ValueError, AttributeError):
+        # trust_env: unlike the localhost client, a proxy the user has set up is wanted here.
+        client = client or httpx.Client(trust_env=True, timeout=timeout, follow_redirects=True)
+        try:
+            r = client.get(RELEASES_API, headers={"User-Agent": f"WritingParrot/{__version__}",
+                                                  "Accept": "application/vnd.github+json"})
+            r.raise_for_status()
+            tag = r.json().get("tag_name")
+            return tag if isinstance(tag, str) else None
+        finally:
+            if own:
+                client.close()
+    except Exception:       # offline, a bad proxy setting, a missing proxy package, an odd answer: all "don't know"
         return None
-    finally:
-        if own:
-            client.close()
 
 
 def due(settings, now: float) -> bool:
     last = settings.last_update_check
-    return last is None or now < last or now - last >= CHECK_EVERY
+    if isinstance(last, bool) or not isinstance(last, (int, float)):
+        return True     # missing, or hand-edited into something else
+    return now < last or now - last >= CHECK_EVERY

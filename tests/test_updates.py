@@ -69,3 +69,15 @@ def test_due_boundaries():
     assert not updates.due(Settings(last_update_check=1000.0), 1000.0 + day - 1)
     assert updates.due(Settings(last_update_check=1000.0), 1000.0 + day)
     assert updates.due(Settings(last_update_check=5000.0), 1000.0)     # the clock went backwards
+
+
+def test_due_ignores_a_value_that_is_not_a_number():
+    for bad in ("yesterday", [1], {}, True):
+        assert updates.due(Settings(last_update_check=bad), 1000.0)
+
+
+def test_check_latest_survives_a_client_that_cannot_be_built(monkeypatch):
+    def broken(*a, **k):
+        raise ImportError("socksio is not installed")
+    monkeypatch.setattr(updates.httpx, "Client", broken)
+    assert check_latest() is None

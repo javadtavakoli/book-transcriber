@@ -1,9 +1,11 @@
 """Main window: one page at a time (setup, home, flow, export, local, review), language toggle, close guard."""
 import os
+import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox,
                                QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
@@ -21,13 +23,9 @@ from .local_view import LocalView
 from .review_view import ReviewView
 from .setup_view import SetupView
 
-class _UpdateCheck(QThread):
-    """Asks GitHub for the latest release off the GUI thread; the answer comes back as a signal."""
-    found = Signal(object)      # the newer tag, or None
-
-    def run(self) -> None:
-        # Looked up through the module at run time, so a test can replace it.
-        self.found.emit(updates.check_latest())
+class _UpdateBridge(QObject):
+    """Carries the update check's answer from its worker thread to the GUI thread."""
+    found = Signal(object)      # the latest tag, or None
 
 
 PAGES = ("setup", "home", "flow", "export", "local", "review")
@@ -57,11 +55,13 @@ class MainWindow(QMainWindow):
         top.addStretch(1)
         self.update_label = QLabel()
         self.update_label.setTextFormat(Qt.RichText)
-        self.update_label.setStyleSheet("color: #666;")
+        self.update_label.setForegroundRole(QPalette.PlaceholderText)
         self.update_label.linkActivated.connect(about_dialog.open_url)
         self.update_label.hide()
         top.addWidget(self.update_label)
-        self.update_thread: _UpdateCheck | None = None
+        self.update_thread: threading.Thread | None = None
+        self.update_bridge = _UpdateBridge(self)
+        self.update_bridge.found.connect(self._on_update_found)
         self.update_tag: str | None = None
         self.settings_button = QToolButton()
         self.settings_button.setText("⚙")
@@ -166,18 +166,27 @@ class MainWindow(QMainWindow):
 
     def check_for_updates(self) -> None:
         """At start, at most once a day: a quiet notice in the top bar if a newer version is out."""
-        now = time.time()
-        if self.update_thread is not None or not updates.due(self.settings, now):
+        if self.update_thread is not None or not updates.due(self.settings, time.time()):
             return
-        self.settings.last_update_check = now
-        self.save_settings()
-        self.update_thread = _UpdateCheck(self)
-        self.update_thread.found.connect(self._on_update_found)
+        bridge = self.update_bridge
+
+        def work() -> None:
+            # Looked up through the module at run time, so a test can replace it.
+            tag = updates.check_latest()
+            try:
+                bridge.found.emit(tag)
+            except RuntimeError:
+                pass        # the window was closed meanwhile, and the bridge went with it
+
+        self.update_thread = threading.Thread(target=work, daemon=True)
         self.update_thread.start()
 
     def _on_update_found(self, tag) -> None:
-        newer = updates.newer_version(__version__, tag) if tag else None
-        self.update_tag = newer
+        if tag is None:
+            return      # no answer (offline?): ask again next start
+        self.settings.last_update_check = time.time()
+        self.save_settings()
+        self.update_tag = updates.newer_version(__version__, tag)
         self._show_update_notice()
 
     def _show_update_notice(self) -> None:
@@ -296,8 +305,6 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.hide()     # disappear at once; stopping a download can take a few seconds
-        if self.update_thread is not None:
-            self.update_thread.wait(8000)       # a request in flight ends within its 5 s timeout
         self.transcriber.cancel()
         self.setup_runner.stop_and_wait()
         self.flow_view.llm_download.stop_and_wait()

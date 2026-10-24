@@ -1,3 +1,6 @@
+import threading
+import time
+
 from booktranscriber import __version__, paths, updates
 from booktranscriber.gui import about_dialog
 from booktranscriber.gui.main_window import MainWindow
@@ -40,6 +43,29 @@ def test_update_notice_shown_when_newer(qtbot, monkeypatch):
     assert load_settings(paths.settings_file()).last_update_check == w.settings.last_update_check is not None
 
 
+def test_failed_check_is_not_remembered(qtbot):
+    w = make(qtbot)
+    w.check_for_updates()
+    w.update_thread.join(3)
+    qtbot.wait(50)
+    assert w.settings.last_update_check is None
+
+
+def test_closing_while_the_check_is_still_running(qtbot, monkeypatch):
+    release = threading.Event()
+    monkeypatch.setattr(updates, "check_latest", lambda *a, **k: release.wait(10) and "v99.0.0")
+    w = MainWindow(I18n("en"), Settings())
+    w.check_for_updates()
+    start = time.monotonic()
+    w.close()
+    w.deleteLater()
+    qtbot.wait(50)
+    assert time.monotonic() - start < 2
+    release.set()       # the answer arrives for a window that is gone
+    w.update_thread.join(3)
+    assert not w.update_thread.is_alive()
+
+
 def test_notice_link_opens_the_releases_page(qtbot, monkeypatch):
     opened = []
     monkeypatch.setattr(about_dialog, "open_url", opened.append)
@@ -56,7 +82,7 @@ def test_no_notice_offline(qtbot):
     w = make(qtbot)
     w.show()
     w.check_for_updates()
-    qtbot.waitUntil(lambda: not w.update_thread.isRunning(), timeout=3000)
+    w.update_thread.join(3)
     qtbot.wait(50)
     assert not w.update_label.isVisible()
 
@@ -66,7 +92,7 @@ def test_no_notice_when_not_newer(qtbot, monkeypatch):
     w = make(qtbot)
     w.show()
     w.check_for_updates()
-    qtbot.waitUntil(lambda: not w.update_thread.isRunning(), timeout=3000)
+    w.update_thread.join(3)
     qtbot.wait(50)
     assert not w.update_label.isVisible()
 
