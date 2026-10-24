@@ -1,0 +1,167 @@
+"""First-run setup: download what this machine needs, with one aggregated progress stream."""
+import dataclasses
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+import httpx
+
+from . import paths, setup_sources
+from .downloader import ChecksumError, DownloadCancelled, NetworkError, download_file
+from .settings import Settings
+from .syscheck import WHISPER_REPOS, SystemInfo, choose_whisper_model
+
+ITEMS = ("check", "gpu", "whisper", "test")
+GB = 1_000_000_000
+GPU_ESTIMATE = int(1.6 * GB)
+MODEL_ESTIMATE = {"large-v3": int(3.1 * GB), "large-v3-turbo": int(1.7 * GB)}
+SELFTEST_TIMEOUT = 600
+
+
+class SetupError(Exception):
+    def __init__(self, kind: str, message: str = ""):
+        super().__init__(message or kind)
+        self.kind = kind
+
+
+@dataclass
+class SetupPlan:
+    info: SystemInfo
+    include_gpu: bool
+    whisper_model: str
+    reuse_model_path: Path | None
+    needed_bytes: int
+
+
+@dataclass
+class SetupProgress:
+    item: str
+    item_done: int
+    item_total: int
+    overall_done: int
+    overall_total: int
+    bytes_per_sec: float
+    eta_seconds: float | None
+
+
+def make_plan(info: SystemInfo, existing: Path | None) -> SetupPlan:
+    include_gpu = info.os != "macos" and info.gpu is not None
+    model = choose_whisper_model(info)
+    needed = (GPU_ESTIMATE if include_gpu else 0) + (0 if existing else MODEL_ESTIMATE[model])
+    return SetupPlan(info, include_gpu, model, existing, int(needed * 1.1))
+
+
+def model_dir_for(model: str) -> Path:
+    return paths.models_dir() / WHISPER_REPOS[model].split("/")[1]
+
+
+def run_selftest(model_path: str, device: str, lib_dirs: list[str] | None = None) -> None:
+    """Transcribe a moment of noise in a worker process, exactly as a real job would run."""
+    from .gpu import default_lib_dirs, gpu_env
+    from .protocol import decode
+    from .worker import worker_command
+    windows = sys.platform == "win32"
+    env = gpu_env(default_lib_dirs() if lib_dirs is None else lib_dirs, os.environ, windows)
+    kw = {"creationflags": subprocess.CREATE_NO_WINDOW} if windows else {}
+    try:
+        r = subprocess.run(worker_command(["--selftest", "--model", model_path, "--device", device]),
+                           env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           stdin=subprocess.DEVNULL, timeout=SELFTEST_TIMEOUT, **kw)
+    except subprocess.TimeoutExpired as e:
+        raise SetupError("test", "self-test timed out") from e
+    events = [e for e in map(decode, r.stdout.splitlines()) if e]
+    (paths.logs_dir() / "selftest.log").write_text(r.stdout + "\n" + r.stderr, "utf-8")
+    if r.returncode == 0 and events and events[-1]["type"] == "done":
+        return
+    kind = next((e["kind"] for e in events if e["type"] == "error"), "unknown")
+    raise SetupError("gpu" if kind == "model" and device != "cpu" else "test", r.stderr[-2000:])
+
+
+class _Meter:
+    """Overall progress plus speed over the last few seconds."""
+
+    def __init__(self, total: int, on_progress):
+        self.total, self.on_progress, self.base = total, on_progress, 0
+        self.window = deque()
+
+    def report(self, item: str, item_done: int, item_total: int, file_done: int = 0):
+        done = min(self.base + file_done, self.total)
+        now = time.monotonic()
+        self.window.append((now, done))
+        while self.window and now - self.window[0][0] > 5:
+            self.window.popleft()
+        t0, d0 = self.window[0]
+        speed = (done - d0) / (now - t0) if now > t0 else 0.0
+        eta = (self.total - done) / speed if speed > 0 else None
+        self.on_progress(SetupProgress(item, item_done, item_total, done, self.total, speed, eta))
+
+
+def run_setup(plan: SetupPlan, settings: Settings, on_progress: Callable[[SetupProgress], None],
+              cancel: threading.Event, *, downloader=download_file, sources=setup_sources,
+              selftest=run_selftest) -> Settings:
+    gpu_dir = paths.gpu_dir()
+    try:
+        with httpx.Client(follow_redirects=True, timeout=30) as client:
+            gpu_files = sources.gpu_wheel_files(plan.info.os, gpu_dir, client) if plan.include_gpu else []
+        model_path = plan.reuse_model_path or model_dir_for(plan.whisper_model)
+        model_files = [] if plan.reuse_model_path else sources.model_files(WHISPER_REPOS[plan.whisper_model], model_path)
+    except (httpx.HTTPError, OSError) as e:
+        raise SetupError("network", str(e)) from e
+    except LookupError as e:
+        raise SetupError("gpu", str(e)) from e
+
+    pending_gpu = [f for f in gpu_files if not _marker(f).exists()]
+    total = sum(f.size for f in gpu_files + model_files)
+    gpu_left = sum(f.size for f in pending_gpu)
+    # Wheels are unpacked next to themselves, so they need roughly twice their size while extracting.
+    if shutil.disk_usage(paths.data_dir()).free < total + gpu_left:
+        raise SetupError("disk")
+
+    meter = _Meter(total, on_progress)
+    meter.report("check", 1, 1)
+    for item, files in (("gpu", gpu_files), ("whisper", model_files)):
+        item_total = sum(f.size for f in files)
+        item_base = meter.base
+        for f in files:
+            if item == "gpu" and _marker(f).exists():
+                meter.base += f.size
+                continue
+
+            def prog(n, f=f):
+                meter.report(item, meter.base - item_base + n, item_total, n)
+            _download(downloader, f, prog, cancel)
+            meter.base += f.size
+            if item == "gpu":
+                sources.extract_nvidia_libs(f.dest, gpu_dir, plan.info.os == "windows")
+                _marker(f).write_text("ok")
+        meter.report(item, item_total, item_total)
+
+    meter.report("test", 0, 1)
+    selftest(str(model_path), settings.device)
+    meter.report("test", 1, 1)
+    return dataclasses.replace(settings, setup_done=True, whisper_model=plan.whisper_model,
+                               whisper_model_path=str(model_path))
+
+
+def _marker(f) -> Path:
+    return Path(f.dest).with_name(Path(f.dest).name + ".done")
+
+
+def _download(downloader, f, prog, cancel) -> None:
+    try:
+        downloader(f.url, f.dest, f.size, f.sha256, prog, cancel)
+    except NetworkError as e:
+        raise SetupError("network", str(e)) from e
+    except ChecksumError as e:
+        raise SetupError("checksum", str(e)) from e
+    except DownloadCancelled as e:
+        raise SetupError("cancelled") from e
+    except OSError as e:
+        raise SetupError("disk" if e.errno == 28 else "network", str(e)) from e
