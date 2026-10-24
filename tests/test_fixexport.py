@@ -82,6 +82,25 @@ def test_merged_words_still_allowed():
     assert apply_answer(["علی رزا نقاشه"], {1: "علیرضا نقاشه"})[0].reason == "fixed"
 
 
+def test_dropped_word_hidden_by_changing_a_neighbour_is_rejected():
+    # «بگیر» is lost while «چی» becomes «چیز»: fewer words come back and they are not the old ones joined.
+    fixes = apply_answer(["یه چی بگیر بخوریم"], {1: "یه چیز بخوریم"})
+    assert fixes[0].reason == "too_different" and not fixes[0].accepted
+
+
+def test_dropped_word_at_line_start_with_changed_neighbour_is_rejected():
+    assert apply_answer(["یه چی بگیر بخوریم"], {1: "چیز بگیر بخوریم"})[0].reason == "too_different"
+
+
+def test_dropped_word_at_line_end_with_changed_neighbour_is_rejected():
+    assert apply_answer(["یه چی بگیر بخوریم"], {1: "یه چی بخور"})[0].reason == "too_different"
+
+
+def test_split_verb_merged_still_allowed():
+    assert apply_answer(["اون می گه نه"], {1: "اون میگه نه"})[0].reason == "fixed"
+    assert apply_answer(["اون می گه نه"], {1: "اون می\u200cگه نه"})[0].reason == "fixed"
+
+
 def test_replaced_word_still_allowed():
     assert apply_answer(["زندگیم با انقاشی میکنه"], {1: "زندگیم با نقاشی میکنه"})[0].reason == "fixed"
 

@@ -17,6 +17,7 @@ _BIDI = dict.fromkeys(map(ord, "\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066
 
 MAX_PART_CHARS = 6000
 MAX_CHANGE_RATIO = 0.5
+MERGE_SIMILARITY = 0.7    # fewer words back: how alike the joined-up removed words must be
 
 # English instructions: chat AIs follow them most reliably; the transcript itself stays in its language.
 INSTRUCTIONS = """You are correcting an automatic speech-to-text transcript of a recorded conversation.
@@ -92,10 +93,28 @@ def parse_answer(text: str) -> dict[int, str]:
 
 
 def _drops_word(a: str, b: str) -> bool:
-    """A word removed with no word added right before or after it. Merges and replacements are fine."""
-    kinds = [kind for kind, _ in word_diff(a, b)]
-    return any(kind == "removed" and "added" not in kinds[max(i - 1, 0): i + 2]
-               for i, kind in enumerate(kinds))
+    """A word removed without a matching word added right before or after it.
+
+    Allowed: a replacement (as many words come back as went, or more), and a merge, where fewer
+    words come back but they are the removed ones joined («علی رزا» → «علیرضا», «می گه» → «میگه»):
+    the removed words without spaces must be at least MERGE_SIMILARITY alike the added text.
+    Anything else hides a lost word behind a changed neighbour («چی بگیر» → «چیز»).
+    """
+    diff = word_diff(a, b)
+    return any(kind == "removed" and not any(_replaces(text, t) for k, t in diff[max(i - 1, 0): i + 2]
+                                             if k == "added")
+               for i, (kind, text) in enumerate(diff))
+
+
+def _replaces(removed: str, added: str) -> bool:
+    if len(removed.split()) <= len(added.split()):
+        return True
+    return SequenceMatcher(None, _joined(removed), _joined(added)).ratio() >= MERGE_SIMILARITY
+
+
+def _joined(text: str) -> str:
+    """The letters alone: no spaces, no ZWNJ (a merge may come back with either)."""
+    return "".join(text.split()).replace("\u200c", "")
 
 
 def _too_different(a: str, b: str, max_change: float) -> bool:
