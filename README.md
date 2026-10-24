@@ -41,12 +41,19 @@ double-click it. Windows may warn because the app isn't signed: click **More inf
 
 The sections below are for running from source and for the command line.
 
+<div dir="rtl">
+
+بخش‌های بعدی برای اجرا از روی کد منبع و استفاده از خط فرمان است.
+
+</div>
+
 ---
 
-## Desktop app (preview, Linux)
+## Desktop app (Windows installer, or Linux from source)
 
 A point-and-click version for people who'd rather not use a terminal, in English or
-Persian (switch with the **فا / EN** button).
+Persian (switch with the **فا / EN** button). On Windows, install it from **Download**
+above. On Linux, run it from source:
 
 ```bash
 ./setup.sh        # one time

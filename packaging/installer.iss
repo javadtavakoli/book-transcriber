@@ -1,10 +1,13 @@
 ﻿; Writing Parrot installer (Inno Setup 6). Built by .github/workflows/release.yml after PyInstaller:
 ;   iscc /DMyAppVersion=0.1.0 packaging/installer.iss        ->  dist/WritingParrot-Setup-0.1.0.exe
-; Add /DNoPersian when the Inno install has no Languages\Persian.isl.
+; Persian comes from packaging/Persian.isl (vendored, see its header); without that file it builds English only.
 ; Saved as UTF-8 with a BOM so Inno reads the Persian messages correctly.
 
 #ifndef MyAppVersion
   #error Pass the version: iscc /DMyAppVersion=0.1.0 packaging/installer.iss
+#endif
+#if FileExists(AddBackslash(SourcePath) + "Persian.isl")
+  #define HavePersian
 #endif
 
 [Setup]
@@ -28,16 +31,18 @@ SolidCompression=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-#ifndef NoPersian
-Name: "persian"; MessagesFile: "compiler:Languages\Persian.isl"
+#ifdef HavePersian
+Name: "persian"; MessagesFile: "Persian.isl"
 #endif
 
 [CustomMessages]
-english.DeleteDownloads=Also delete the downloads (%1)?%n%nThese are the speech model, the graphics-card support and the AI helper. Choose No to keep them, so a later reinstall doesn't need to download them again.
+english.DeleteDownloads=Also delete the downloaded speech and AI files (%1) at %2?%n%nYour settings and recent list are removed too; your saved name lists are kept. Choose No to keep everything, so a later reinstall doesn't need to download again.
+english.DeleteSettings=Also delete Writing Parrot's settings, recent list and logs?%n%nYour saved name lists are kept.
 english.SizeGB=%1 GB
 english.SizeMB=%1 MB
-#ifndef NoPersian
-persian.DeleteDownloads=فایل‌های دانلودشده (%1) هم پاک شوند؟%n%nاین‌ها مدل گفتار، پشتیبانی کارت گرافیک و دستیار هوش مصنوعی‌اند. اگر «خیر» را بزنید می‌مانند تا اگر دوباره نصب کردید، لازم نباشد از نو دانلودشان کنید.
+#ifdef HavePersian
+persian.DeleteDownloads=فایل‌های گفتار و هوش مصنوعیِ دانلودشده (%1) در %2 هم پاک شوند؟%n%nتنظیمات و فهرست فایل‌های اخیر هم پاک می‌شوند، ولی فهرست‌های نامی که ذخیره کرده‌اید می‌مانند. اگر «خیر» را بزنید همه‌چیز می‌ماند تا اگر دوباره نصب کردید، لازم نباشد از نو دانلود کنید.
+persian.DeleteSettings=تنظیمات، فهرست فایل‌های اخیر و گزارش‌های کار طوطی‌نویس هم پاک شوند؟%n%nفهرست‌های نامی که ذخیره کرده‌اید می‌مانند.
 persian.SizeGB=%1 گیگابایت
 persian.SizeMB=%1 مگابایت
 #endif
@@ -105,15 +110,9 @@ begin
     Result := FmtMessage(CustomMessage('SizeMB'), [IntToStr(MB)]);
 end;
 
-procedure DeleteDownloads(const Downloads, AppData: String);
+{ The app folder: settings, recents, logs and the helper's pid file. The name lists stay. }
+procedure DeleteAppData(const AppData: String);
 begin
-  DelTree(Downloads + '\models', True, True, True);
-  DelTree(Downloads + '\gpu', True, True, True);
-  DelTree(Downloads + '\llm', True, True, True);
-  DeleteFile(Downloads + '\' + Marker);
-  RemoveDir(Downloads);                         { only goes when empty }
-
-  { The app folder: settings, recents, logs and the helper's pid file. The name lists stay. }
   DeleteFile(AppData + '\settings.json');
   DeleteFile(AppData + '\recents.json');
   DelTree(AppData + '\logs', True, True, True);
@@ -121,8 +120,21 @@ begin
   RemoveDir(AppData + '\llm');
   DeleteFile(AppData + '\' + Marker);           { when it was the downloads folder too }
   RemoveDir(AppData);                           { only goes when empty }
-
   RegDeleteKeyIncludingSubkeys(HKCU, RegKey);
+end;
+
+procedure DeleteDownloads(const Downloads: String);
+begin
+  DelTree(AddBackslash(Downloads) + 'models', True, True, True);
+  DelTree(AddBackslash(Downloads) + 'gpu', True, True, True);
+  DelTree(AddBackslash(Downloads) + 'llm', True, True, True);
+  DeleteFile(AddBackslash(Downloads) + Marker);
+  RemoveDir(Downloads);                         { only goes when empty }
+end;
+
+function Ask(const Text: String): Boolean;
+begin
+  Result := SuppressibleMsgBox(Text, mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -138,18 +150,28 @@ begin
   if not RegQueryStringValue(HKCU, RegKey, 'DownloadsDir', Downloads) or (Trim(Downloads) = '') then
     Downloads := AppData;
   Downloads := RemoveBackslashUnlessRoot(Trim(Downloads));
-  if not DirExists(Downloads) then
-    Exit;
-  { A folder elsewhere is ours only with the marker the app writes there, so a stray value can't empty someone's models\. }
-  if (CompareText(Downloads, AppData) <> 0) and not FileExists(Downloads + '\' + Marker) then
-    Exit;
 
   Found := False;
-  Size := TreeSize(Downloads + '\models', Found) + TreeSize(Downloads + '\gpu', Found) + TreeSize(Downloads + '\llm', Found);
-  if not Found then
-    Exit;     { nothing to ask about }
+  Size := 0;
+  { A folder elsewhere is ours only with the marker the app writes there, so a stray value can't empty someone's models\.
+    A missing folder (an unplugged drive) is left alone. }
+  if DirExists(Downloads) and
+     ((CompareText(Downloads, AppData) = 0) or FileExists(AddBackslash(Downloads) + Marker)) then
+    Size := TreeSize(AddBackslash(Downloads) + 'models', Found) + TreeSize(AddBackslash(Downloads) + 'gpu', Found)
+            + TreeSize(AddBackslash(Downloads) + 'llm', Found);
 
-  if SuppressibleMsgBox(FmtMessage(CustomMessage('DeleteDownloads'), [SizeText(Size)]),
-                        mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
-    DeleteDownloads(Downloads, AppData);
+  if Found then
+  begin
+    if Ask(FmtMessage(CustomMessage('DeleteDownloads'), [SizeText(Size), Downloads])) then
+    begin
+      DeleteDownloads(Downloads);
+      DeleteAppData(AppData);
+    end;
+  end
+  else if FileExists(AppData + '\settings.json') or FileExists(AppData + '\recents.json') or DirExists(AppData + '\logs') then
+  begin
+    { Nothing downloaded to ask about (or its folder is gone): still offer to clear the app folder. }
+    if Ask(CustomMessage('DeleteSettings')) then
+      DeleteAppData(AppData);
+  end;
 end;

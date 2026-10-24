@@ -41,7 +41,10 @@ jobs:
 
       - name: Check the tag matches the version
         if: startsWith(github.ref, 'refs/tags/v')
-        run: python tools/check_version.py ${{ github.ref_name }}
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python tools/check_version.py "$env:TAG"
 
       - name: Read the version
         id: version
@@ -67,12 +70,7 @@ jobs:
             choco install innosetup --no-progress -y
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          $defs = @("/DMyAppVersion=$env:VERSION")
-          if (-not (Test-Path (Join-Path (Split-Path $iscc) "Languages\Persian.isl"))) {
-            Write-Host "Persian.isl is not in this Inno Setup install: building without the Persian language."
-            $defs += "/DNoPersian"
-          }
-          & $iscc @defs packaging\installer.iss
+          & $iscc "/DMyAppVersion=$env:VERSION" packaging\installer.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Write SHA256SUMS.txt
@@ -94,6 +92,7 @@ jobs:
             dist/WritingParrot-Setup-*.exe
             dist/SHA256SUMS.txt
           if-no-files-found: warn
+          overwrite: true
 
   release:
     name: Draft release
@@ -109,6 +108,8 @@ jobs:
       REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/download-artifact@v4
         with:
@@ -119,13 +120,16 @@ jobs:
         shell: bash
         run: |
           sed "s/{{VERSION}}/${TAG#v}/g" packaging/release_notes.md > release-notes.md
-          if draft=$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null); then
+          if draft=$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>&1); then
             if [ "$draft" != "true" ]; then
               echo "Release $TAG is already published; not changing its files." >&2
               exit 1
             fi
             gh release upload "$TAG" artifact/* --clobber --repo "$REPO"
-          else
+          elif [[ "$draft" == *"release not found"* ]]; then
             gh release create "$TAG" --draft --title "Writing Parrot $TAG" \
               --notes-file release-notes.md artifact/* --repo "$REPO"
+          else
+            echo "$draft" >&2      # any other failure (auth, network) must not fall through to create
+            exit 1
           fi
