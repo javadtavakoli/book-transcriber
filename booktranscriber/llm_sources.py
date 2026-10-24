@@ -21,7 +21,8 @@ def runtime_dir(backend: str) -> Path:
 
 
 def _find_server(root: Path) -> Path | None:
-    if not root.is_dir():
+    """The server binary in a fully extracted runtime (one with its .done marker)."""
+    if not (root / DONE_MARKER).is_file():
         return None
     for name in ("llama-server", "llama-server.exe"):
         for p in sorted(root.rglob(name)):
@@ -68,8 +69,8 @@ def _extract_tar(archive: Path, dest: Path, cancel) -> None:
         for member in t:
             _check(cancel)
             try:
-                t.extract(member, dest, filter="data")  # refuses escapes, absolute paths and bad links
-            except (tarfile.FilterError, OSError):
+                t.extract(member, dest, filter="data")  # real I/O errors propagate
+            except tarfile.FilterError:
                 continue
 
 
@@ -108,5 +109,7 @@ def extract_archive(archive: Path, dest: Path, cancel: threading.Event | None = 
         for p in dest.rglob("llama-server"):
             if p.is_file() and not p.is_symlink():
                 p.chmod(p.stat().st_mode | 0o111)
+    if not any(p.is_file() for n in ("llama-server", "llama-server.exe") for p in dest.rglob(n)):
+        raise RuntimeError(f"{archive.name} contains no llama-server")
     (dest / DONE_MARKER).write_text("ok")
     archive.unlink()
