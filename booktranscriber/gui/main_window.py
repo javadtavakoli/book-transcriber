@@ -60,7 +60,7 @@ class MainWindow(QMainWindow):
         self.update_label.hide()
         top.addWidget(self.update_label)
         self.update_thread: threading.Thread | None = None
-        self.update_bridge = _UpdateBridge(self)
+        self.update_bridge = _UpdateBridge()    # no parent: the worker's closure keeps it alive past the window
         self.update_bridge.found.connect(self._on_update_found)
         self.update_tag: str | None = None
         self.settings_button = QToolButton()
@@ -173,10 +173,7 @@ class MainWindow(QMainWindow):
         def work() -> None:
             # Looked up through the module at run time, so a test can replace it.
             tag = updates.check_latest()
-            try:
-                bridge.found.emit(tag)
-            except RuntimeError:
-                pass        # the window was closed meanwhile, and the bridge went with it
+            bridge.found.emit(tag)      # queued to the window's slot; Qt drops it if the window is gone
 
         self.update_thread = threading.Thread(target=work, daemon=True)
         self.update_thread.start()
