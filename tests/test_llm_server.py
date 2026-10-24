@@ -308,3 +308,12 @@ def test_local_client_ignores_environment_proxy(monkeypatch):
     with llm_server.local_client(3) as client:
         assert client.timeout.read == 3
         assert client.trust_env is False
+
+
+def test_first_load_uses_guess_for_fraction_but_not_eta():
+    est = LoadEstimator(None)
+    assert llm_server.FIRST_LOAD_GUESS_SECONDS == 180
+    assert est.fraction(0.30, 90) == 0.5
+    assert est.fraction(0.30, 10) == 0.30
+    assert est.fraction(0.30, 1000) == 0.97
+    assert est.eta(90) is None

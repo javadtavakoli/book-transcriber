@@ -28,6 +28,8 @@ LOAD_STAGES: list[tuple[str, float]] = [
     ("all slots are idle", 1.0),
 ]
 MEMORY_ERRORS = ("out of memory", "erroroutofdevicememory", "failed to allocate", "unable to allocate")
+# With no previous load to go by, assume about this long; the tensor upload logs nothing for minutes.
+FIRST_LOAD_GUESS_SECONDS = 180
 HEALTH_INTERVAL = 0.5
 TICK = 0.1
 TAIL_LINES = 200
@@ -46,11 +48,11 @@ class LoadEstimator:
         self.previous = previous_seconds if previous_seconds and previous_seconds > 0 else None
 
     def fraction(self, stage_fraction: float, elapsed: float) -> float:
-        if self.previous is None:
-            return stage_fraction
-        return max(stage_fraction, min(0.97, elapsed / self.previous))
+        expected = self.previous or FIRST_LOAD_GUESS_SECONDS
+        return max(stage_fraction, min(0.97, elapsed / expected))
 
     def eta(self, elapsed: float) -> float | None:
+        # Time left only from a real previous load, never from the first-load guess.
         if self.previous is None or elapsed >= self.previous:
             return None
         return self.previous - elapsed
