@@ -11,7 +11,7 @@ from ..i18n import fmt_bytes, fmt_duration, fmt_number
 from ..llm_catalog import MODELS, choose_llm
 from ..settings import Settings
 from ..setup_runner import ITEMS, LLM_RUNTIME_ESTIMATE, MODEL_ESTIMATE, SetupProgress, make_plan
-from ..syscheck import detect_system, find_existing_model, source_checkout_dir
+from ..syscheck import detect_system, find_existing_model, is_nvidia, source_checkout_dir
 from .widgets import ProgressRow, body_label, primary_button, secondary_button, title_label
 
 ASSUMED_SPEED = 4_000_000   # bytes/s, for the welcome screen's time estimate
@@ -190,7 +190,11 @@ class SetupView(QWidget):
         tr, lang = self.i18n.tr, self.i18n.language
         plan = self._current_plan()
         gpu = self.info.gpu
-        self.check_line.setText("✔ " + (tr("setup.check.gpu_ok", gpu=gpu.name) if gpu else tr("setup.check.no_gpu")))
+        if gpu is None:
+            line = tr("setup.check.no_gpu")
+        else:
+            line = tr("setup.check.gpu_ok" if is_nvidia(self.info) else "setup.check.gpu_no_cuda", gpu=gpu.name)
+        self.check_line.setText("✔ " + line)
         self.time_line.setText("⏱ " + tr("setup.check.time",
                                          time=fmt_duration(plan.needed_bytes / ASSUMED_SPEED, lang)))
         enough = self.info.free_bytes >= plan.needed_bytes

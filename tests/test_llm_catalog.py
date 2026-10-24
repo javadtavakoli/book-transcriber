@@ -3,7 +3,7 @@ import re
 import pytest
 
 from booktranscriber.llm_catalog import MODELS, RUNTIME_ASSETS, choose_backend, choose_llm
-from booktranscriber.syscheck import GpuInfo, SystemInfo
+from booktranscriber.syscheck import GpuInfo, SystemInfo, choose_whisper_model
 
 GB = 1_000_000_000
 
@@ -40,3 +40,12 @@ def test_choose_backend(os_name, gpu):
 ])
 def test_choose_llm_tiers(info, expected):
     assert choose_llm(info) == expected
+
+
+def test_choose_llm_amd_8gb_gets_e4b_recommended():
+    assert choose_llm(SystemInfo("windows", GpuInfo("AMD Radeon RX 7600", 8192, "amd"), 0)) == ("gemma-4-e4b", True)
+
+
+def test_nvidia_unchanged():
+    assert choose_llm(SystemInfo("linux", GpuInfo("RTX 4050", 6141), 0)) == ("gemma-4-e4b", True)
+    assert choose_whisper_model(SystemInfo("linux", GpuInfo("RTX 4050", 6141), 0)) == "large-v3"

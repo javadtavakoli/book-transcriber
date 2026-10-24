@@ -336,3 +336,8 @@ def test_llm_extract_error_says_llm():
         run_setup(make_plan(GPU_INFO, None), Settings(), no_test, threading.Event(), downloader=fake_dl,
                   sources=FakeSources(), selftest=no_test, llm=BadArchive())
     assert (e.value.kind, e.value.item) == ("network", "llm")
+
+
+def test_make_plan_amd_no_cuda():
+    p = make_plan(SystemInfo("windows", GpuInfo("AMD Radeon RX 7600", 8192, "amd"), 10**12), None)
+    assert p.include_gpu is False and p.whisper_model == "large-v3-turbo"

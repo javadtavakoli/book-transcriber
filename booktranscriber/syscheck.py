@@ -1,6 +1,7 @@
-"""What this computer has: an NVIDIA GPU (and how much memory), free disk, models already present."""
+"""What this computer has: a graphics card (and how much memory), free disk, models already present."""
 import ctypes
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -12,12 +13,16 @@ WHISPER_REPOS = {
     "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
 }
 MIN_VRAM_LARGE_MB = 4000
+INTEGRATED_MAX_MB = 2048  # at or below this a graphics chip shares system memory; treat it as no graphics card
+WINDOWS_DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+PCI_VENDORS = {"10DE": "nvidia", "1002": "amd", "8086": "intel"}
 
 
 @dataclass
 class GpuInfo:
     name: str
     vram_mb: int
+    vendor: str = "nvidia"  # "nvidia" | "amd" | "intel" | "other"
 
 
 @dataclass
@@ -43,6 +48,79 @@ def parse_nvidia_smi(output: str) -> GpuInfo | None:
             except ValueError:
                 return None
     return None
+
+
+def is_nvidia(info: SystemInfo) -> bool:
+    return info.gpu is not None and info.gpu.vendor == "nvidia"
+
+
+def _vendor_of(name: str, device_id: str = "") -> str:
+    m = re.search(r"VEN_([0-9A-F]{4})", device_id.upper())
+    if m and m.group(1) in PCI_VENDORS:
+        return PCI_VENDORS[m.group(1)]
+    low = name.lower()
+    if "nvidia" in low or "geforce" in low:
+        return "nvidia"
+    if "amd" in low or "radeon" in low:
+        return "amd"
+    if "intel" in low:
+        return "intel"
+    return "other"
+
+
+def _adapter_mb(entry: dict) -> int:
+    mem = entry.get("HardwareInformation.qwMemorySize")
+    if mem is None:
+        mem = entry.get("HardwareInformation.MemorySize")
+    if isinstance(mem, (bytes, bytearray)):
+        mem = int.from_bytes(mem, "little")
+    return int(mem) // (1024 * 1024) if isinstance(mem, int) else 0
+
+
+def parse_windows_adapters(entries: list[dict]) -> GpuInfo | None:
+    """The adapter with the most dedicated memory; integrated chips (shared memory) count as none."""
+    best = max(entries, key=_adapter_mb, default=None)
+    if best is None or _adapter_mb(best) <= INTEGRATED_MAX_MB or not best.get("DriverDesc"):
+        return None
+    name = str(best["DriverDesc"])
+    return GpuInfo(name, _adapter_mb(best), _vendor_of(name, str(best.get("MatchingDeviceId", ""))))
+
+
+def parse_amdgpu_sysfs(cards: dict[str, int]) -> GpuInfo | None:
+    """cards maps a card name to its mem_info_vram_total in bytes."""
+    mb = max(cards.values(), default=0) // (1024 * 1024)
+    return GpuInfo("AMD graphics card", mb, "amd") if mb > INTEGRATED_MAX_MB else None
+
+
+def _query_windows_adapters() -> GpuInfo | None:
+    if sys.platform != "win32":
+        return None
+    import winreg
+    entries = []
+    for i in range(32):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{WINDOWS_DISPLAY_CLASS}\\{i:04d}") as key:
+                entry = {}
+                for field in ("DriverDesc", "HardwareInformation.qwMemorySize", "HardwareInformation.MemorySize",
+                              "MatchingDeviceId"):
+                    try:
+                        entry[field] = winreg.QueryValueEx(key, field)[0]
+                    except OSError:
+                        pass
+                entries.append(entry)
+        except OSError:
+            continue
+    return parse_windows_adapters(entries)
+
+
+def _query_amdgpu_sysfs() -> GpuInfo | None:
+    cards = {}
+    for f in Path("/sys/class/drm").glob("card*/device/mem_info_vram_total"):
+        try:
+            cards[f.parent.parent.name] = int(f.read_text().strip())
+        except (OSError, ValueError):
+            pass
+    return parse_amdgpu_sysfs(cards)
 
 
 def _query_nvidia() -> GpuInfo | None:
@@ -79,12 +157,18 @@ def total_ram_bytes() -> int:
 
 def detect_system(target_dir: Path) -> SystemInfo:
     os_name = current_os()
-    gpu = None if os_name == "macos" else _query_nvidia()
+    gpu = None
+    if os_name != "macos":
+        gpu = _query_nvidia()
+        if gpu is None and os_name == "windows":
+            gpu = _query_windows_adapters()
+        elif gpu is None and os_name == "linux":
+            gpu = _query_amdgpu_sysfs()
     return SystemInfo(os_name, gpu, shutil.disk_usage(target_dir).free, total_ram_bytes())
 
 
 def choose_whisper_model(info: SystemInfo) -> str:
-    return "large-v3" if info.gpu and info.gpu.vram_mb >= MIN_VRAM_LARGE_MB else "large-v3-turbo"
+    return "large-v3" if is_nvidia(info) and info.gpu.vram_mb >= MIN_VRAM_LARGE_MB else "large-v3-turbo"
 
 
 def find_existing_model(search_dirs: list[Path], model: str) -> Path | None:

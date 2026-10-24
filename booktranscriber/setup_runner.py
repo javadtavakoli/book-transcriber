@@ -18,7 +18,7 @@ from . import llm_sources, paths, setup_sources
 from .downloader import ChecksumError, DownloadCancelled, NetworkError, download_file
 from .llm_catalog import MODELS, choose_backend, choose_llm
 from .settings import Settings
-from .syscheck import WHISPER_REPOS, SystemInfo, choose_whisper_model, current_os
+from .syscheck import WHISPER_REPOS, SystemInfo, choose_whisper_model, current_os, is_nvidia
 
 ITEMS = ("check", "gpu", "whisper", "llm", "test")
 GB = 1_000_000_000
@@ -61,7 +61,7 @@ class SetupProgress:
 
 
 def make_plan(info: SystemInfo, existing: Path | None, include_llm: bool | None = None) -> SetupPlan:
-    include_gpu = info.os != "macos" and info.gpu is not None
+    include_gpu = info.os != "macos" and is_nvidia(info)
     model = choose_whisper_model(info)
     llm_model, recommended = choose_llm(info)
     include_llm = recommended if include_llm is None else include_llm

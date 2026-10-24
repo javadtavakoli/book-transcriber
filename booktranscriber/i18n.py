@@ -18,6 +18,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "setup.welcome.body": "Before your first transcript, the app needs to download a few things. "
                               "This happens only once.",
         "setup.check.gpu_ok": "Your computer: works well ({gpu} found)",
+        "setup.check.gpu_no_cuda": "Graphics card: {gpu}. Speech recognition will use the processor; the AI helper can use the graphics card.",
         "setup.check.no_gpu": "Your computer: works, but transcribing will be slower (no NVIDIA graphics card found)",
         "setup.check.time": "About {time} on a normal connection",
         "setup.check.space": "Needs {needed} free space (you have {free})",
@@ -181,6 +182,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "setup.welcome.body": "پیش از اولین متن، برنامه باید چند چیز را دانلود کند. "
                               "این کار فقط یک بار انجام می‌شود.",
         "setup.check.gpu_ok": "رایانهٔ شما: به‌خوبی کار می‌کند (کارت گرافیک {gpu} پیدا شد)",
+        "setup.check.gpu_no_cuda": "کارت گرافیک: {gpu}. تبدیل گفتار به متن با پردازنده انجام می‌شود؛ دستیار هوشمند می‌تواند از کارت گرافیک استفاده کند.",
         "setup.check.no_gpu": "رایانهٔ شما: کار می‌کند، ولی تبدیل به متن کندتر است (کارت گرافیک انویدیا پیدا نشد)",
         "setup.check.time": "حدود {time} با اینترنت معمولی",
         "setup.check.space": "به {needed} فضای خالی نیاز دارد (شما {free} دارید)",
