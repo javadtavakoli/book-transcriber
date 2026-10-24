@@ -4,6 +4,7 @@ import os
 import socket
 import sys
 import threading
+from pathlib import Path
 
 import httpx
 import pytest
@@ -81,13 +82,42 @@ def test_gpu_route_passes_no_ngl_and_cpu_route_passes_zero(fake_llama, model, tm
         srv.stop()
     gpu_argv, cpu_argv = [json.loads(line) for line in log.read_text().splitlines()]
     for argv in (gpu_argv, cpu_argv):
-        assert argv[argv.index("-m") + 1] == str(model)
+        assert argv[argv.index("-m") + 1] == model.name     # run from its folder: see the next test
         assert argv[argv.index("-c") + 1] == "4096"
         assert argv[argv.index("--host") + 1] == "127.0.0.1"
         assert "--jinja" in argv
         assert argv[argv.index("-lv") + 1] == "4"   # default verbosity hides the loading stages
     assert "-ngl" not in gpu_argv
     assert cpu_argv[cpu_argv.index("-ngl") + 1] == "0"
+
+
+def test_model_is_passed_as_a_bare_name_from_its_folder(fake_llama, tmp_path, monkeypatch):
+    # llama.cpp opens -m with a narrow string on Windows: a Persian folder must not reach it.
+    folder = tmp_path / "علی" / "دانلودها" / "llm"
+    folder.mkdir(parents=True)
+    model = folder / "gemma.gguf"
+    model.write_bytes(b"GGUF")
+    seen = tmp_path / "cwd.json"
+    monkeypatch.setenv("FAKE_LLAMA_CWD", str(seen))
+    srv = LlamaServer(fake_llama("ok"), model, gpu=False)
+    assert srv.command()[1:3] == ["-m", "gemma.gguf"]
+    srv.start(lambda f, eta: None, threading.Event(), timeout=20)
+    srv.stop()
+    assert json.loads(seen.read_text("utf-8")) == {"cwd": str(folder), "model_found": True}
+
+
+def test_relative_binary_still_starts_from_the_model_folder(fake_llama, model, monkeypatch):
+    binary = fake_llama("ok")
+    other = model.parent / "sub" / model.name
+    other.parent.mkdir()
+    other.write_bytes(b"GGUF")
+    monkeypatch.chdir(binary.parent)
+    srv = LlamaServer(Path(binary.name), other, gpu=True)     # relative to here, not to the model's folder
+    srv.start(lambda f, eta: None, threading.Event(), timeout=20)
+    try:
+        assert srv.is_ready()
+    finally:
+        srv.stop()
 
 
 def test_oom_is_memory_kind(fake_llama, model):

@@ -6,6 +6,7 @@ Modes: ok, slow (echo answers), fix (echo with one spelling fixed), think (echo 
 holdchat (echo, but only after HOLD_SECONDS: a request stays in flight), diefix (echoes the first
 request, then dies like a native crash on the next), oom and crash (exit during load), hang (never ready).
 If FAKE_LLAMA_LOG is set, the argument list is appended to that file as one JSON line.
+If FAKE_LLAMA_CWD is set, the working directory and whether -m names a file there are written to that file.
 If FAKE_LLAMA_CHATS is set, a line is appended to that file as each chat request arrives.
 If FAKE_LLAMA_PIDS is set (Windows, where the server's pid is the .cmd launcher's), the fake's own pid
 is written to <that dir>/<parent pid>, so tests can check the process that really serves is gone.
@@ -144,6 +145,9 @@ def main() -> None:
     if os.environ.get("FAKE_LLAMA_LOG"):
         with open(os.environ["FAKE_LLAMA_LOG"], "a", encoding="utf-8") as f:
             f.write(json.dumps(sys.argv[2:]) + "\n")
+    if os.environ.get("FAKE_LLAMA_CWD"):
+        with open(os.environ["FAKE_LLAMA_CWD"], "w", encoding="utf-8") as f:
+            json.dump({"cwd": os.getcwd(), "model_found": os.path.isfile(args.model)}, f)
 
     # Like llama-server, listen first and answer 503 while the model loads.
     server = ThreadingHTTPServer((args.host, args.port), make_handler(args.mode))

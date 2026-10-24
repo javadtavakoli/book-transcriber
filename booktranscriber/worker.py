@@ -86,6 +86,10 @@ def parse_args(argv):
     a = p.parse_args(argv)
     if not a.selftest and not (a.audio and a.out):
         p.error("--audio and --out are required")
+    # Absolute now, because loading a local model changes the working directory (see load_in_child).
+    for name in ("audio", "out", "download_root"):
+        if getattr(a, name):
+            setattr(a, name, os.path.abspath(getattr(a, name)))
     return a
 
 
@@ -141,6 +145,11 @@ def _transcribe(a, emit, loader) -> int:
     return 0
 
 
+def load_in_child(name_or_path: str, device: str, download_root: str | None, log):
+    """The worker's loader: native code gets a bare model name, run from the model's parent folder."""
+    return engine.load_model(engine.local_model_ref(name_or_path), device, download_root, log)
+
+
 def run(argv: list[str], emit: Callable[[dict], None], loader=engine.load_model) -> int:
     a = parse_args(argv)
     try:
@@ -179,7 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
     register_dll_dirs_from_env()
-    return run(sys.argv[1:] if argv is None else argv, lambda e: print(encode(e), flush=True))
+    return run(sys.argv[1:] if argv is None else argv, lambda e: print(encode(e), flush=True),
+               loader=load_in_child)
 
 
 if __name__ == "__main__":

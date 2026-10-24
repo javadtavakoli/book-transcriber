@@ -276,7 +276,9 @@ class LlamaServer:
         self._lock = threading.Lock()
 
     def command(self) -> list[str]:
-        cmd = [str(self.binary), "-m", str(self.model), "-c", str(self.ctx),
+        # llama.cpp opens -m with a narrow string on Windows, so a Persian folder name would break it:
+        # the server runs from the model's folder and gets the bare (always ASCII) file name.
+        cmd = [str(self.binary.absolute()), "-m", self.model.name, "-c", str(self.ctx),
                "--host", "127.0.0.1", "--port", str(self.port), "--jinja",
                "-lv", "4"]   # the loading stages are only logged at verbosity 4
         # On the graphics card llama-server fits as many layers as free memory allows by itself.
@@ -293,7 +295,8 @@ class LlamaServer:
         log = _Log()
         try:
             proc = subprocess.Popen(self.command(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace", **kw)
+                                    stdin=subprocess.DEVNULL, cwd=str(self.model.parent), encoding="utf-8",
+                                    errors="replace", **kw)
         except OSError as e:   # a build that can't even be executed is as broken as one that crashes
             raise LlmStartError("crash", str(e)) from e
         job = _job_for(proc.pid) if windows else None

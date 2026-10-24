@@ -71,6 +71,20 @@ def format_line(seg: Segment, timestamps: bool) -> str:
     return f"{format_timestamp(seg.start)} {text}" if timestamps else text
 
 
+def local_model_ref(name_or_path: str) -> str:
+    """A local model folder becomes its bare (always ASCII) name, with the working directory set to its parent.
+
+    CTranslate2 opens the model with a narrow string on Windows, so a Persian user name or downloads
+    folder in the path would break the load. Model names ("large-v3") are returned unchanged.
+    Changes the process's working directory: only for the worker child.
+    """
+    if not os.path.isdir(name_or_path):
+        return name_or_path
+    path = os.path.abspath(name_or_path)
+    os.chdir(os.path.dirname(path))     # Python's chdir takes the wide path
+    return os.path.basename(path)
+
+
 def load_model(name_or_path: str, device: str, download_root: str | None,
                log: Callable[[str], None]):
     """Try GPU fp16, GPU int8, then CPU. Returns (model, "device/compute")."""

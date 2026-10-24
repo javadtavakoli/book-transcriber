@@ -58,7 +58,7 @@ jobs:
         run: pyinstaller packaging/writing_parrot.spec --noconfirm
 
       - name: Smoke-test the build
-        run: python packaging/smoke_test.py dist/WritingParrot
+        run: python packaging/smoke_test.py dist/WritingParrot --model-test
 
       - name: Build the installer (Inno Setup)
         shell: pwsh

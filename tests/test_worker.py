@@ -181,3 +181,38 @@ def test_ensure_stdio_falls_back_to_devnull(monkeypatch):
     finally:
         for s in streams:
             s.close()
+
+
+def test_relative_paths_survive_a_loader_that_changes_folder(tmp_path, wav_file, monkeypatch):
+    import shutil
+    shutil.copy(wav_file, tmp_path / "a.wav")
+    monkeypatch.chdir(tmp_path)
+    elsewhere = tmp_path / "models"
+    elsewhere.mkdir()
+
+    def loader(name, device, download_root, log):
+        os.chdir(elsewhere)     # what load_in_child does for a local model
+        return FakeModel(_segs((0.0, 2.0, "سلام"))), "cpu/int8"
+    events = []
+    assert run(["--audio", "a.wav", "--out", "o.txt", "--model", "x"], events.append, loader=loader) == 0
+    assert (tmp_path / "o.txt").read_text("utf-8") == "سلام\n"
+    assert events[-1]["out"] == str(tmp_path / "o.txt")
+
+
+def test_load_in_child_gives_native_code_a_bare_ascii_name(tmp_path, monkeypatch):
+    from booktranscriber import engine, worker
+    monkeypatch.chdir(tmp_path)
+    model = tmp_path / "دانلودها" / "faster-whisper-tiny"
+    model.mkdir(parents=True)
+    seen = []
+    monkeypatch.setattr(engine, "load_model", lambda name, device, root, log: seen.append((name, os.getcwd())))
+    worker.load_in_child(str(model), "cpu", None, print)
+    assert seen == [("faster-whisper-tiny", str(model.parent))]
+
+
+def test_main_loads_through_load_in_child(monkeypatch):
+    from booktranscriber import worker
+    used = []
+    monkeypatch.setattr(worker, "run", lambda argv, emit, loader: used.append(loader) or 0)
+    assert worker.main(["--selftest", "--model", "x"]) == 0
+    assert used == [worker.load_in_child]

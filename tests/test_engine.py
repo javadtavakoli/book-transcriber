@@ -54,3 +54,18 @@ def test_import_has_no_side_effects(monkeypatch):
     importlib.reload(booktranscriber.engine)
     importlib.reload(booktranscriber.gpu)
     assert dict(os.environ) == env_before
+
+
+def test_local_model_ref_runs_from_the_parent_with_a_bare_name(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    model = tmp_path / "طوطی" / "دانلودها" / "models" / "faster-whisper-tiny"
+    model.mkdir(parents=True)
+    assert booktranscriber.engine.local_model_ref(str(model)) == "faster-whisper-tiny"
+    assert os.getcwd() == str(model.parent)
+
+
+def test_local_model_ref_leaves_names_alone(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert booktranscriber.engine.local_model_ref("large-v3") == "large-v3"
+    assert booktranscriber.engine.local_model_ref(str(tmp_path / "missing")) == str(tmp_path / "missing")
+    assert os.getcwd() == str(tmp_path)

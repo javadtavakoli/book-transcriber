@@ -1,7 +1,9 @@
-"""Smoke-test a frozen build:  python packaging/smoke_test.py dist/WritingParrot
+"""Smoke-test a frozen build:  python packaging/smoke_test.py dist/WritingParrot [--model-test]
 
 Copies the build to a folder with a Persian name and a space, then checks that the GUI self-check
 passes and that the worker answers a missing file with a not_found error line. Exits non-zero on failure.
+--model-test also downloads the tiny Whisper model (about 80 MB) into a Persian-named folder and
+checks that the worker's self-test really loads it and runs it on the processor.
 """
 import json
 import os
@@ -15,6 +17,10 @@ from pathlib import Path
 EXE = "WritingParrot.exe" if sys.platform == "win32" else "WritingParrot"
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 WORKER_TIMEOUT = 60
+MODEL_TIMEOUT = 300
+TINY_REPO = "Systran/faster-whisper-tiny"
+TINY_REVISION = "d90ca5fe260221311c53c58e660288d3deb8d356"
+TINY_FILES = ["config.json", "model.bin", "tokenizer.json", "vocabulary.txt"]
 
 
 def fail(msg: str) -> int:
@@ -58,11 +64,44 @@ def check_worker(exe: Path, work: Path, env: dict) -> int:
     return fail(f"no not_found error line (exit {p.returncode})\nstdout: {out.decode('utf-8', 'replace')}\nstderr: {err.decode('utf-8', 'replace')}")
 
 
+def check_model(exe: Path, tmp: Path, env: dict) -> int:
+    """A model in a Persian folder (a Persian Windows user name) must load: native code only gets an ASCII name."""
+    from huggingface_hub import snapshot_download
+    model = tmp / "کاربر علی" / "دانلودها" / "faster-whisper-tiny"
+    try:
+        snapshot_download(TINY_REPO, revision=TINY_REVISION, local_dir=model, allow_patterns=TINY_FILES)
+    except Exception as e:
+        return fail(f"could not download {TINY_REPO}: {e}")
+    cmd = [str(exe), "--worker", "--selftest", "--model", str(model), "--device", "cpu"]
+    p = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, creationflags=NO_WINDOW)
+    try:
+        out, err = p.communicate(timeout=MODEL_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
+        return fail(f"model self-test did not finish within {MODEL_TIMEOUT} s")
+    out, err = out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+    for line in out.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("type") == "done":
+            if f"loading {model.name} " not in err:
+                return fail(f"the model was not loaded by its bare name\nstderr: {err}")
+            print(f"model: {line}", flush=True)
+            return 0
+    return fail(f"no done line from the model self-test (exit {p.returncode})\nstdout: {out}\nstderr: {err}")
+
+
 def main(argv: list[str]) -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")    # a cp1252 CI console can't print Persian paths
     except Exception:
         pass
+    model_test = "--model-test" in argv
+    argv = [a for a in argv if a != "--model-test"]
     if len(argv) != 1:
         print(__doc__)
         return 2
@@ -78,6 +117,8 @@ def main(argv: list[str]) -> int:
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen", BT_DATA_DIR=str(work / "data"))
         start = time.time()
         code = check_gui(app / EXE, work, env) or check_worker(app / EXE, work, env)
+        if code == 0 and model_test:
+            code = check_model(app / EXE, tmp, env)
         print(f"{'PASS' if code == 0 else 'FAILED'} in {time.time() - start:.0f} s", flush=True)
         return code
     finally:
