@@ -9,8 +9,10 @@ from .. import paths
 from ..i18n import I18n
 from ..settings import Settings, save_settings
 from .runners import SetupRunner, TranscribeRunner
+from .export_view import ExportView
 from .flow_view import FlowView
 from .home_view import HomeView
+from .review_view import ReviewView
 from .setup_view import SetupView
 
 PAGES = ("setup", "home", "flow", "export", "review")
@@ -65,6 +67,15 @@ class MainWindow(QMainWindow):
         self.flow_view.back_home.connect(self._go_home)
         self.set_page_widget("home", self.home_view)
         self.set_page_widget("flow", self.flow_view)
+        self.export_view = ExportView(i18n)
+        self.review_view = ReviewView(i18n)
+        self.flow_view.export_requested.connect(self._open_export)
+        self.export_view.back.connect(lambda: self.show_page("flow"))
+        self.export_view.review_ready.connect(self._open_review)
+        self.review_view.back.connect(lambda: self.show_page("export"))
+        self.review_view.saved.connect(lambda path: self.home_view.refresh_recents())
+        self.set_page_widget("export", self.export_view)
+        self.set_page_widget("review", self.review_view)
 
         i18n.language_changed.connect(self._on_language)
         self._on_language(i18n.language)
@@ -106,8 +117,17 @@ class MainWindow(QMainWindow):
         self.show_page("flow")
 
     def _open_recent(self, item) -> None:
-        self.flow_view.open_result(item)
+        self.flow_view.open_result(item, from_recents=True)
         self.show_page("flow")
+
+    def _open_export(self, raw_path: str, names: list, language: str) -> None:
+        self.export_view.load(raw_path, names, language)
+        self.show_page("export")
+
+    def _open_review(self, fixes) -> None:
+        ev = self.export_view
+        self.review_view.load(ev.raw_path, ev.lines, fixes, ev.language)
+        self.show_page("review")
 
     def _go_home(self) -> None:
         self.home_view.refresh_recents()

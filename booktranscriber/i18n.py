@@ -114,6 +114,41 @@ STRINGS: dict[str, dict[str, str]] = {
         "result.title": "Your transcript is ready",
         "result.saved_at": "Saved as: {path}",
         "result.open_folder": "Open folder",
+
+        "result.choose": "Fix mistakes? Choose one:",
+        "result.local": "Fix it here (private)",
+        "result.local_soon": "Coming in the next version",
+        "result.export": "Prepare for ChatGPT / Claude / Gemini",
+        "result.export_hint": "Free and best for Persian. You paste the text into the AI yourself.",
+        "result.just_save": "Keep the text as it is",
+
+        "export.back": "← Back",
+        "export.title": "Fix it with ChatGPT, Claude or Gemini",
+        "export.howto": "1. Open ChatGPT, Claude or Gemini in your web browser.\n"
+                        "2. Press Copy for part 1, paste it into the chat and send it.\n"
+                        "3. Copy the AI's whole answer and paste it into the box at the bottom.\n"
+                        "Repeat for every part, then press Check the answers.",
+        "export.names": "Names (one per line), so the AI spells them right:",
+        "export.part": "Part {i} of {n}",
+        "export.copy": "Copy",
+        "export.copied": "Copied ✓",
+        "export.save_all": "Save all parts…",
+        "export.paste_label": "Paste the AI's answers here (all parts together is fine):",
+        "export.check": "Check the answers",
+        "export.nothing": "No numbered lines were found in what you pasted. Paste the AI's answer exactly as it came, including the [1], [2]… numbers.",
+
+        "review.back": "← Back to answers",
+        "review.title": "Check the corrections",
+        "review.summary": "{fixed} lines fixed · {kept} kept as they were · {missing} not answered yet",
+        "review.col_n": "#",
+        "review.col_original": "Original",
+        "review.col_corrected": "Corrected",
+        "review.col_use": "Use fix",
+        "review.only_changed": "Show only changed lines",
+        "review.too_different": "The AI changed this line too much, so the original is kept. Tick it to use the AI's version anyway.",
+        "review.save": "Save",
+        "review.copy": "Copy",
+        "review.saved": "Saved as: {path}",
     },
     "fa": {
         "app.title": "کتاب‌نویس",
@@ -219,6 +254,41 @@ STRINGS: dict[str, dict[str, str]] = {
         "result.title": "متن شما آماده است",
         "result.saved_at": "ذخیره شد در: {path}",
         "result.open_folder": "باز کردن پوشه",
+
+        "result.choose": "اشتباه‌ها اصلاح شوند؟ یکی را انتخاب کنید:",
+        "result.local": "اصلاح همین‌جا (خصوصی)",
+        "result.local_soon": "در نسخهٔ بعدی",
+        "result.export": "آماده‌سازی برای ChatGPT / Claude / Gemini",
+        "result.export_hint": "رایگان و بهترین برای فارسی. متن را خودتان در هوش مصنوعی می‌گذارید.",
+        "result.just_save": "متن همین‌طور بماند",
+
+        "export.back": "بازگشت →",
+        "export.title": "اصلاح با ChatGPT، Claude یا Gemini",
+        "export.howto": "۱. ChatGPT، Claude یا Gemini را در مرورگر باز کنید.\n"
+                        "۲. برای بخش ۱ «کپی» را بزنید، در گفتگو بچسبانید و بفرستید.\n"
+                        "۳. کل پاسخ هوش مصنوعی را کپی کنید و در کادر پایین بچسبانید.\n"
+                        "این کار را برای همهٔ بخش‌ها تکرار کنید و بعد «بررسی پاسخ‌ها» را بزنید.",
+        "export.names": "نام‌ها (هر کدام در یک خط) تا هوش مصنوعی درست بنویسد:",
+        "export.part": "بخش {i} از {n}",
+        "export.copy": "کپی",
+        "export.copied": "کپی شد ✓",
+        "export.save_all": "ذخیرهٔ همهٔ بخش‌ها…",
+        "export.paste_label": "پاسخ‌های هوش مصنوعی را اینجا بچسبانید (همهٔ بخش‌ها با هم هم اشکالی ندارد):",
+        "export.check": "بررسی پاسخ‌ها",
+        "export.nothing": "در متنی که چسباندید خط شماره‌داری پیدا نشد. پاسخ هوش مصنوعی را همان‌طور که آمده، با شماره‌های [1]، [2]… بچسبانید.",
+
+        "review.back": "بازگشت به پاسخ‌ها →",
+        "review.title": "بررسی اصلاح‌ها",
+        "review.summary": "{fixed} خط اصلاح شد · {kept} خط دست‌نخورده ماند · {missing} خط هنوز پاسخ ندارد",
+        "review.col_n": "#",
+        "review.col_original": "متن اصلی",
+        "review.col_corrected": "اصلاح‌شده",
+        "review.col_use": "استفاده",
+        "review.only_changed": "فقط خط‌های تغییرکرده نشان داده شوند",
+        "review.too_different": "هوش مصنوعی این خط را بیش از حد تغییر داده، برای همین متن اصلی نگه داشته شد. اگر باز هم نسخهٔ هوش مصنوعی را می‌خواهید، تیک بزنید.",
+        "review.save": "ذخیره",
+        "review.copy": "کپی",
+        "review.saved": "ذخیره شد در: {path}",
     },
 }
 

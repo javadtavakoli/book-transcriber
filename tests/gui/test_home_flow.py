@@ -240,3 +240,39 @@ def test_main_window_home_to_flow(qtbot, tmp_path):
     assert w.current_page() == "flow" and w.flow_view.state() == "names"
     w.flow_view.back_home.emit()
     assert w.current_page() == "home"
+
+
+def test_result_offers_choices_and_export(qtbot, flow):
+    v, runner, _ = flow
+    v.names_edit.setPlainText("هومر")
+    qtbot.mouseClick(v.continue_button, Qt.LeftButton)
+    out = Path(runner.last_job.out)
+    out.write_text("سلام\n", "utf-8")
+    runner.finished.emit(str(out), 1)
+    assert not v.local_button.isEnabled() and v.export_button.isEnabled()
+    with qtbot.waitSignal(v.export_requested) as blocker:
+        qtbot.mouseClick(v.export_button, Qt.LeftButton)
+    assert blocker.args == [str(out), ["هومر"], "fa"]
+
+
+def test_main_window_export_review_save(qtbot, tmp_path):
+    (tmp_path / "model.bin").write_bytes(b"x")
+    w = MainWindow(I18n("en"), Settings(setup_done=True, whisper_model_path=str(tmp_path)))
+    qtbot.addWidget(w)
+    raw = tmp_path / "a - متن خام.txt"
+    raw.write_text("تعغیب حومر\n", "utf-8")
+    item = RecentItem(str(tmp_path / "a.m4a"), str(raw), None, "t")
+    add_recent(paths.recents_file(), item)
+    w.home_view.recent_opened.emit(item)
+    assert w.current_page() == "flow" and w.flow_view.state() == "result"
+    w.flow_view.export_button.click()
+    assert w.current_page() == "export"
+    w.export_view.paste_edit.setPlainText("[1] تعقیب هومر")
+    w.export_view.check_button.click()
+    assert w.current_page() == "review"
+    w.review_view.save_button.click()
+    assert (tmp_path / "a - متن اصلاح‌شده.txt").read_text("utf-8") == "تعقیب هومر\n"
+    w.review_view.back.emit()
+    assert w.current_page() == "export"
+    w.export_view.back.emit()
+    assert w.current_page() == "flow"

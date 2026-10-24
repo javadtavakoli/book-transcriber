@@ -35,6 +35,7 @@ def set_text_direction(widget, language: str) -> None:
 class FlowView(QWidget):
     transcribed = Signal(object)
     back_home = Signal()
+    export_requested = Signal(str, list, str)   # raw path, names, transcript language
 
     def __init__(self, i18n, settings, runner, parent=None):
         super().__init__(parent)
@@ -44,6 +45,7 @@ class FlowView(QWidget):
         self.item: RecentItem | None = None
         self.total = 0.0
         self.problem_kind = None
+        self.last_names: list[str] = []
 
         self.stack = QStackedLayout(self)
         self.pages = {}
@@ -188,6 +190,7 @@ class FlowView(QWidget):
         return path or None
 
     def _start(self, names: list[str], save: bool = False) -> None:
+        self.last_names = names
         if save and names and self.save_box.isChecked() and self.save_name.text().strip():
             save_list(paths.namelists_dir(), self.save_name.text(), names)
         lang = self.language()
@@ -342,9 +345,33 @@ class FlowView(QWidget):
         row.addWidget(self.saved_label, 1)
         row.addWidget(self.open_folder_button)
         lay.addLayout(row)
-        self.result_layout = lay
+        self.choose_label = QLabel()
+        self.choose_label.setStyleSheet("font-weight: 600; margin-top: 8px;")
+        lay.addWidget(self.choose_label)
+        choices = QHBoxLayout()
+        self.local_button = secondary_button()
+        self.local_button.setEnabled(False)
+        self.export_button = primary_button()
+        self.export_button.clicked.connect(self._request_export)
+        self.keep_button = secondary_button()
+        self.keep_button.clicked.connect(self.back_home)
+        for b in (self.local_button, self.export_button, self.keep_button):
+            b.setMinimumHeight(56)
+            choices.addWidget(b)
+        lay.addLayout(choices)
+        self.export_hint = body_label()
+        lay.addWidget(self.export_hint)
 
-    def open_result(self, item: RecentItem) -> None:
+    def transcript_language(self) -> str:
+        return self.job.language if self.job else self.settings.language
+
+    def _request_export(self) -> None:
+        if self.item:
+            self.export_requested.emit(self.item.raw_path, list(self.last_names), self.transcript_language())
+
+    def open_result(self, item: RecentItem, from_recents: bool = False) -> None:
+        if from_recents:
+            self.job, self.last_names = None, []
         self.item = item
         self.audio = item.audio
         try:
@@ -352,7 +379,7 @@ class FlowView(QWidget):
         except OSError:
             text = ""
         self.result_text.setPlainText(text)
-        set_text_direction(self.result_text, self.job.language if self.job else self.settings.language)
+        set_text_direction(self.result_text, self.transcript_language())
         self.saved_label.setText(self.i18n.tr("result.saved_at", path=item.raw_path))
         self._show("result")
 
@@ -391,6 +418,11 @@ class FlowView(QWidget):
         self.cancel_button.setText(tr("flow.cancel"))
         self.result_title.setText(tr("result.title"))
         self.open_folder_button.setText(tr("result.open_folder"))
+        self.choose_label.setText(tr("result.choose"))
+        self.local_button.setText(tr("result.local") + "\n" + tr("result.local_soon"))
+        self.export_button.setText(tr("result.export"))
+        self.export_hint.setText(tr("result.export_hint"))
+        self.keep_button.setText(tr("result.just_save"))
         if self.item:
             self.saved_label.setText(tr("result.saved_at", path=self.item.raw_path))
         self._set_problem(self.problem_kind)
