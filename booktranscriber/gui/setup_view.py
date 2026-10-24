@@ -29,6 +29,14 @@ def _nearest_existing(path: Path) -> Path:
     return path
 
 
+def _detect_at(folder: Path):
+    """The computer, with the free space where folder is; the app folder's when that drive is gone."""
+    try:
+        return detect_system(_nearest_existing(folder))
+    except OSError:     # an unplugged drive: not even its root exists
+        return detect_system(paths.data_dir())
+
+
 class SetupView(QWidget):
     completed = Signal(object)
 
@@ -195,7 +203,7 @@ class SetupView(QWidget):
         self.location_problem.hide()
         if self.settings.downloads_dir:     # a repair run: stay where the downloads already are
             self.downloads_target, self.location_reason = Path(self.settings.downloads_dir), None
-            self.info = detect_system(_nearest_existing(self.downloads_target))
+            self.info = _detect_at(self.downloads_target)
         else:
             self.info = detect_system(paths.data_dir())
         root = source_checkout_dir()
@@ -210,7 +218,7 @@ class SetupView(QWidget):
             needed = make_plan(self.info, reuse, include_llm=recommended).needed_bytes
             self.downloads_target, self.location_reason = downloads.suggest_default(needed)
             if self.location_reason is not None:     # another drive: its free space is what counts
-                self.info = detect_system(_nearest_existing(self.downloads_target))
+                self.info = _detect_at(self.downloads_target)
         fits = self.info.free_bytes >= make_plan(self.info, reuse, include_llm=True).needed_bytes
         self.llm_box.blockSignals(True)
         self.llm_box.setChecked(recommended and fits)
@@ -259,7 +267,7 @@ class SetupView(QWidget):
             return
         self.location_problem.hide()
         self.downloads_target, self.location_reason = target, None
-        self.info = detect_system(_nearest_existing(target))
+        self.info = _detect_at(target)
         self._update_welcome()
 
     def start(self) -> None:

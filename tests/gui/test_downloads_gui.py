@@ -313,3 +313,22 @@ def test_present_downloads_folder_asks_nothing(qtbot, monkeypatch, tmp_path):
 def test_missing_prompt_strings_in_english():
     tr = I18n("en").tr
     assert tr("downloads.retry") == "Try again" and tr("downloads.choose") == "Choose another folder"
+
+
+def test_unplugged_drive_does_not_break_start(qtbot, monkeypatch, tmp_path):
+    """On Windows E:\\ itself is gone when the drive is unplugged: measuring there raises."""
+    gone = tmp_path / "usb" / "WritingParrot"
+    data = paths.data_dir_path()
+
+    def detect(d):
+        if Path(d) != data:
+            raise OSError("no such drive")
+        return OK
+    monkeypatch.setattr(setup_view, "detect_system", detect)
+    w = MainWindow(I18n("en"), ready_settings(tmp_path, downloads_dir=str(gone)))
+    qtbot.addWidget(w)
+    assert w.setup_view.downloads_target == gone
+    asked = []
+    monkeypatch.setattr(downloads_dialog, "ask_missing", lambda parent, i18n, path: asked.append(path) or "close")
+    w.check_downloads_folder()
+    assert asked == [gone]

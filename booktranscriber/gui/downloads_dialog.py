@@ -199,6 +199,7 @@ class DownloadsDialog(QDialog):
             self._status(tr(f"downloads.failed_{e.kind}"), error=True)
 
     def _on_thread_finished(self) -> None:
+        self._thread.wait()     # never drop a QThread that hasn't fully stopped
         self._thread = None
         self._set_moving(False)
 
