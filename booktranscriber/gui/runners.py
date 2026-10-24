@@ -1,6 +1,7 @@
 """Bridges from Qt to the long-running work: the worker process, first-run setup and the local AI helper."""
 import os
 import threading
+import weakref
 from dataclasses import dataclass
 
 import shiboken6
@@ -15,6 +16,23 @@ from ..settings import save_settings
 from ..worker import worker_command, worker_env
 
 STDERR_TAIL = 40
+
+
+def _bound(method, token):
+    """A slot calling method(token, *signal_args) for as long as the runner is alive.
+
+    QObject.sender() can crash when the sending object is already destroyed by the time a queued
+    slot runs, so each handler is told which job its signal belongs to at connect time instead.
+    The runner is held weakly and the job by a plain token, so the connection forms no reference
+    cycle (which would let the garbage collector tear down Qt objects at a random moment).
+    """
+    ref = weakref.WeakMethod(method)
+
+    def call(*args):
+        m = ref()
+        if m is not None:
+            m(token, *args)
+    return call
 
 
 @dataclass
@@ -55,6 +73,7 @@ class TranscribeRunner(QObject):
         self._buf = b""
         self._stderr: list[str] = []
         self._ended = False
+        self._token = None      # identifies the current worker's signals
 
     def is_running(self) -> bool:
         # The job is over once its final event arrives, even if the process takes a moment to exit.
@@ -69,19 +88,20 @@ class TranscribeRunner(QObject):
         for k, v in worker_env().items():
             env.insert(k, v)
         p.setProcessEnvironment(env)
-        # Every handler checks sender() is still the current process, so a late signal from
+        # Every handler checks its token is still the current job's, so a late signal from
         # an old worker can never affect the job that replaced it.
-        p.readyReadStandardOutput.connect(self._on_stdout)
-        p.readyReadStandardError.connect(self._on_stderr)
-        p.finished.connect(self._on_finished)
-        p.errorOccurred.connect(self._on_error)
+        self._token = tok = object()
+        p.readyReadStandardOutput.connect(_bound(self._on_stdout, tok))
+        p.readyReadStandardError.connect(_bound(self._on_stderr, tok))
+        p.finished.connect(_bound(self._on_finished, tok))
+        p.errorOccurred.connect(_bound(self._on_error, tok))
         self._proc = p
         p.start(cmd[0], cmd[1:])
 
-    def _current(self) -> bool:
-        # Also false while Qt is destroying the process (e.g. the window closing).
-        p = self.sender()
-        return p is not None and p is self._proc and shiboken6.isValid(p)
+    def _current(self, tok) -> bool:
+        # Also false once the process is gone or while Qt is destroying it (e.g. the window closing).
+        p = self._proc
+        return tok is self._token and p is not None and shiboken6.isValid(p)
 
     def _stop_process(self) -> None:
         p, self._proc = self._proc, None
@@ -100,8 +120,8 @@ class TranscribeRunner(QObject):
             if os.path.exists(part):
                 os.remove(part)
 
-    def _on_stdout(self) -> None:
-        if self._current():
+    def _on_stdout(self, tok) -> None:
+        if self._current(tok):
             self._read_stdout()
 
     def _read_stdout(self) -> None:
@@ -129,8 +149,8 @@ class TranscribeRunner(QObject):
             self._ended = True
             self.failed.emit(ev.get("kind", "unknown"), ev.get("message", ""))
 
-    def _on_stderr(self) -> None:
-        if self._current():
+    def _on_stderr(self, tok) -> None:
+        if self._current(tok):
             self._read_stderr()
 
     def _read_stderr(self) -> None:
@@ -139,8 +159,8 @@ class TranscribeRunner(QObject):
             f.write(text)
         self._stderr = (self._stderr + text.splitlines())[-STDERR_TAIL:]
 
-    def _on_finished(self, code, status) -> None:
-        if not self._current():
+    def _on_finished(self, tok, code, status) -> None:
+        if not self._current(tok):
             return
         p = self._proc
         self._read_stdout()
@@ -155,9 +175,9 @@ class TranscribeRunner(QObject):
         self._proc = None
         p.deleteLater()
 
-    def _on_error(self, err) -> None:
+    def _on_error(self, tok, err) -> None:
         # FailedToStart never reaches finished(); other errors are followed by it.
-        if self._current() and err == QProcess.FailedToStart and not self._ended:
+        if self._current(tok) and err == QProcess.FailedToStart and not self._ended:
             p = self._proc
             self._ended = True
             self._proc = None
@@ -337,6 +357,7 @@ class LocalFixRunner(QObject):
         self._server_lock = threading.Lock()
         self._settings = None
         self._live = False      # the current job's results are still wanted
+        self._token = None      # identifies the current job's signals
         self.gpu_failed = False     # the graphics card's build crashed while fixing: the processor from now on
 
     def is_running(self) -> bool:
@@ -357,14 +378,15 @@ class LocalFixRunner(QObject):
         self._cancel = threading.Event()
         self._settings, self._live = settings, True
         t = _LocalFixThread(self, list(raw_lines), list(names), settings, self._cancel)
-        # Each handler checks the signal comes from the current job, so a stopped job's late
+        # Each handler checks its token is the current job's, so a stopped job's late
         # results never reach the screen.
-        t.load_progress.connect(self._on_load_progress)
-        t.fallback.connect(self._on_fallback)
-        t.loaded.connect(self._on_loaded)
-        t.fix_progress.connect(self._on_fix_progress)
-        t.done.connect(self._on_done)
-        t.error.connect(self._on_error)
+        self._token = tok = object()
+        t.load_progress.connect(_bound(self._on_load_progress, tok))
+        t.fallback.connect(_bound(self._on_fallback, tok))
+        t.loaded.connect(_bound(self._on_loaded, tok))
+        t.fix_progress.connect(_bound(self._on_fix_progress, tok))
+        t.done.connect(_bound(self._on_done, tok))
+        t.error.connect(_bound(self._on_error, tok))
         self._thread = t
         t.start()
 
@@ -387,32 +409,32 @@ class LocalFixRunner(QObject):
             self._server.stop()
         self._server = None
 
-    def _current(self) -> bool:
-        return self._live and self.sender() is self._thread
+    def _current(self, tok) -> bool:
+        return self._live and tok is self._token
 
-    def _on_load_progress(self, fraction: float, eta) -> None:
-        if self._current():
+    def _on_load_progress(self, tok, fraction: float, eta) -> None:
+        if self._current(tok):
             self.load_progress.emit(fraction, eta)
 
-    def _on_fallback(self) -> None:
-        if self._current():
+    def _on_fallback(self, tok) -> None:
+        if self._current(tok):
             self.fallback.emit()
 
-    def _on_loaded(self) -> None:
+    def _on_loaded(self, tok) -> None:
         # How long loading took is remembered, so next time the bar can show the time left.
-        if self.sender() is self._thread and self._settings is not None:
+        if tok is self._token and self._settings is not None:
             save_settings(self._settings, paths.settings_file())
 
-    def _on_fix_progress(self, done: int, total: int) -> None:
-        if self._current():
+    def _on_fix_progress(self, tok, done: int, total: int) -> None:
+        if self._current(tok):
             self.fix_progress.emit(done, total)
 
-    def _on_done(self, fixes) -> None:
-        if self._current():
+    def _on_done(self, tok, fixes) -> None:
+        if self._current(tok):
             self._live = False
             self.finished.emit(fixes)
 
-    def _on_error(self, kind: str) -> None:
-        if self._current():
+    def _on_error(self, tok, kind: str) -> None:
+        if self._current(tok):
             self._live = False
             self.failed.emit(kind)

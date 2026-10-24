@@ -127,3 +127,15 @@ def test_setup_runner_stop_joins_thread(qtbot, monkeypatch):
     assert r.is_running()
     r.stop_and_wait()
     assert not r.is_running()
+
+
+def test_late_signals_from_a_replaced_process_are_ignored(qtbot):
+    """Handlers are bound to their job at connect time (no QObject.sender(), which can crash)."""
+    r = TranscribeRunner()
+    seen = []
+    r.failed.connect(lambda *a: seen.append(a))
+    r._token = current = object()
+    r._on_finished(object(), 1, runners.QProcess.NormalExit)
+    r._on_error(object(), runners.QProcess.FailedToStart)
+    r._on_stdout(object())
+    assert seen == [] and r._token is current

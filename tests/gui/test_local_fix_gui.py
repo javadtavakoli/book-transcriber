@@ -592,3 +592,22 @@ def test_stale_server_reaped_before_transcription(qtbot, window, raw_file, monke
     window.home_view.handle_files([str(audio)])
     window.flow_view.skip_button.click()
     assert order == ["reap", "start"]
+
+
+def test_late_signals_from_a_replaced_thread_are_ignored(qtbot):
+    """Handlers are bound to their thread at connect time (no QObject.sender(), which can crash)."""
+    r = LocalFixRunner()
+    old, current = object(), object()
+    r._token, r._live = current, True
+    seen = []
+    for name in ("load_progress", "fallback", "fix_progress", "finished", "failed"):
+        getattr(r, name).connect(lambda *a, n=name: seen.append(n))
+    r._on_load_progress(old, 0.5, None)
+    r._on_fallback(old)
+    r._on_fix_progress(old, 1, 2)
+    r._on_done(old, [])
+    r._on_error(old, "model")
+    assert seen == [] and r._live
+    r._on_fix_progress(current, 1, 2)
+    r._on_done(current, [])
+    assert seen == ["fix_progress", "finished"] and not r._live
