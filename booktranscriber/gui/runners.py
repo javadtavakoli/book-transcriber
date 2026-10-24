@@ -9,7 +9,7 @@ from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, Sign
 from .. import paths
 from ..downloader import DownloadCancelled
 from ..llm_server import LlmStartError, start_with_fallback
-from ..local_fix import fix_transcript
+from ..local_fix import chunk_lines, fix_transcript
 from ..protocol import decode
 from ..settings import save_settings
 from ..worker import worker_command, worker_env
@@ -258,20 +258,20 @@ class _LocalFixThread(QThread):
             if server is None or not server.is_ready():
                 if server is not None:
                     server.stop()       # it died since the last job
-                server = start_with_fallback(self.settings, self.load_progress.emit, self.cancel,
-                                             self.fallback.emit)
-                # Set before fixing, so stop_server() can reach it. A cancelled job still winding
-                # down may have loaded one just now too: keep a single helper.
-                with r._server_lock:
-                    if r._server is not None and r._server is not server and r._server.is_ready():
-                        server.stop()
-                        server = r._server
-                    else:
-                        r._server = server
-                self.loaded.emit()
+                server = self._load()
             fixes = fix_transcript(self.lines, self.names, server.port, self.fix_progress.emit, self.cancel)
             if self.cancel.is_set():    # stopped during the last part: the answers may be cut short
                 raise DownloadCancelled()
+            unanswered = {f.n for f in fixes if f.reason == "missing"}
+            if unanswered and server.gpu and server.exited(wait=1):
+                # The graphics card's build crashed while answering (spec §5.2): the processor for the
+                # rest of this session, and the lines it never answered once more there.
+                r.gpu_failed = True
+                server.stop()
+                server = self._load()
+                fixes = self._fix_again(fixes, unanswered, server)
+                if self.cancel.is_set():
+                    raise DownloadCancelled()
             spoken = [f for f in fixes if f.original]
             if spoken and all(f.reason == "missing" for f in spoken):
                 # Not a single answer (every request failed): an error to retry, not an empty review.
@@ -287,6 +287,30 @@ class _LocalFixThread(QThread):
             import traceback
             _write_log("llm.log", traceback.format_exc())
             self.error.emit("unknown")
+
+    def _load(self):
+        r = self.runner
+        server = start_with_fallback(self.settings, self.load_progress.emit, self.cancel, self.fallback.emit,
+                                     use_gpu=not r.gpu_failed)
+        # Set before fixing, so stop_server() can reach it. A cancelled job still winding
+        # down may have loaded one just now too: keep a single helper.
+        with r._server_lock:
+            if r._server is not None and r._server is not server and r._server.is_ready():
+                server.stop()
+                server = r._server
+            else:
+                r._server = server
+        self.loaded.emit()
+        return server
+
+    def _fix_again(self, fixes, numbers: set[int], server):
+        """Fix just the given lines (the others blanked out), and merge them into fixes."""
+        lines = [line if n in numbers else "" for n, line in enumerate(self.lines, 1)]
+        total = len(chunk_lines(self.lines))
+        # Parts count on from those already answered, so the counter never goes back.
+        again = fix_transcript(lines, self.names, server.port,
+                               lambda done, n: self.fix_progress.emit(total - n + done, total), self.cancel)
+        return [new if f.n in numbers else f for f, new in zip(fixes, again)]
 
 
 def _write_log(name: str, text: str) -> None:
@@ -313,6 +337,7 @@ class LocalFixRunner(QObject):
         self._server_lock = threading.Lock()
         self._settings = None
         self._live = False      # the current job's results are still wanted
+        self.gpu_failed = False     # the graphics card's build crashed while fixing: the processor from now on
 
     def is_running(self) -> bool:
         return self._live and self._thread is not None and self._thread.isRunning()

@@ -119,6 +119,9 @@ class LocalView(QWidget):
 
     def _on_fallback(self) -> None:
         self.fallback_note.show()
+        if self._state == "fixing":     # the graphics card failed mid-way: the processor's build loads now
+            self.bar.setValue(0)
+            self._set_state("loading")
 
     def _on_fix_progress(self, done: int, total: int) -> None:
         self.part = (done, total)

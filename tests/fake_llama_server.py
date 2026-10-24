@@ -3,8 +3,8 @@
 Usage: fake_llama_server.py <mode> --port N [real llama-server arguments, unknown ones ignored]
 Modes: ok, slow (echo answers), fix (echo with one spelling fixed), think (echo after a
 <think> block), dropfirst (first answer omits its last line, later ones echo), http500 (chat fails),
-holdchat (echo, but only after HOLD_SECONDS: a request stays in flight), oom and crash (exit during load),
-hang (never ready).
+holdchat (echo, but only after HOLD_SECONDS: a request stays in flight), diefix (echoes the first
+request, then dies like a native crash on the next), oom and crash (exit during load), hang (never ready).
 If FAKE_LLAMA_LOG is set, the argument list is appended to that file as one JSON line.
 If FAKE_LLAMA_CHATS is set, a line is appended to that file as each chat request arrives.
 """
@@ -58,6 +58,14 @@ def answer(mode: str, body: dict) -> str:
     return lines
 
 
+def die() -> None:
+    log("0.03.200.000 W ggml_vulkan: device lost")
+    # Die abruptly like a native crash, but without a core dump (SIGKILL; Windows has no signals).
+    if sys.platform == "win32":
+        os._exit(3)
+    os.kill(os.getpid(), signal.SIGKILL)
+
+
 def make_handler(mode: str):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, status: int, data: dict) -> None:
@@ -87,6 +95,8 @@ def make_handler(mode: str):
                     f.write("chat\n")
             if mode == "holdchat":
                 time.sleep(HOLD_SECONDS)
+            if mode == "diefix" and chats:
+                die()
             if mode == "http500":
                 return self._send(500, {"error": {"message": "fake failure", "type": "server_error",
                                                   "code": 500}})
@@ -135,11 +145,7 @@ def main() -> None:
             log(line)
         sys.exit(1)
     if args.mode == "crash":
-        log("0.03.200.000 W ggml_vulkan: device lost")
-        # Die abruptly like a native crash, but without a core dump (SIGKILL; Windows has no signals).
-        if sys.platform == "win32":
-            os._exit(3)
-        os.kill(os.getpid(), signal.SIGKILL)
+        die()
     if args.mode == "hang":
         while True:
             time.sleep(1)

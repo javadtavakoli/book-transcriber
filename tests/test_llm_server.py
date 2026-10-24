@@ -187,6 +187,34 @@ def test_cpu_crash_is_not_retried(fake_llama, model, monkeypatch):
     assert fallbacks == [1] and calls == ["vulkan", "cpu"]
 
 
+def test_without_gpu_goes_straight_to_cpu(fake_llama, model, monkeypatch):
+    calls = _binaries(monkeypatch, {"vulkan": fake_llama("ok"), "cpu": fake_llama("ok")})
+    settings = Settings(llm_model_path=str(model), llm_backend="vulkan")
+    fallbacks = []
+    srv = start_with_fallback(settings, lambda f, eta: None, threading.Event(),
+                              lambda: fallbacks.append(1), use_gpu=False)
+    try:
+        assert calls == ["cpu"] and fallbacks == [1] and srv.is_ready() and not srv.gpu
+    finally:
+        srv.stop()
+
+
+def test_exited_tells_a_crash_from_stop(fake_llama, model):
+    srv = LlamaServer(fake_llama("diefix"), model, gpu=True)
+    srv.start(lambda f, eta: None, threading.Event(), timeout=20)
+    try:
+        assert not srv.exited()
+        url = f"http://127.0.0.1:{srv.port}/v1/chat/completions"
+        body = {"messages": [{"role": "user", "content": "[1] خب"}]}
+        assert httpx.post(url, json=body).status_code == 200     # the first answer, then it dies
+        with pytest.raises(httpx.HTTPError):
+            httpx.post(url, json=body)
+        assert srv.exited(wait=5) and not srv.is_ready()
+    finally:
+        srv.stop()
+    assert not srv.exited()
+
+
 def test_missing_model_is_missing_kind(tmp_path):
     settings = Settings(llm_model_path=str(tmp_path / "gone.gguf"), llm_backend="vulkan")
     with pytest.raises(LlmStartError) as e:

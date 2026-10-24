@@ -319,6 +319,17 @@ class LlamaServer:
         proc = self._proc
         return self._ready and proc is not None and proc.poll() is None
 
+    def exited(self, wait: float = 0) -> bool:
+        """Whether the process ended by itself (a crash), not through stop(); waits up to `wait` seconds."""
+        proc = self._proc
+        if proc is None:
+            return False
+        try:
+            proc.wait(wait)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+
     def stop(self) -> None:
         with self._lock:
             proc, reader, self._proc, self._reader = self._proc, self._reader, None, None
@@ -345,15 +356,18 @@ def _healthy(client: httpx.Client, url: str) -> bool:
 
 
 def start_with_fallback(settings: Settings, on_progress: ProgressFn, cancel: threading.Event,
-                        on_fallback: Callable[[], None]) -> LlamaServer:
-    """Start on the graphics card; if that build crashes or is missing, use the CPU build once."""
+                        on_fallback: Callable[[], None], use_gpu: bool = True) -> LlamaServer:
+    """Start on the graphics card; if that build crashes or is missing, use the CPU build once.
+
+    use_gpu=False goes straight to the CPU build (the card's build crashed earlier this session).
+    """
     model = Path(settings.llm_model_path) if settings.llm_model_path else None
     if model is None or not model.is_file():
         raise LlmStartError("missing", str(model))
     backend = settings.llm_backend or "cpu"
     previous = settings.llm_load_seconds
     if backend != "cpu":
-        gpu_binary = server_binary(backend)
+        gpu_binary = server_binary(backend) if use_gpu else None
         if gpu_binary is not None:
             server = LlamaServer(gpu_binary, model, gpu=True)
             try:

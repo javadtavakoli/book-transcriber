@@ -262,6 +262,48 @@ def test_runner_drops_results_of_a_stopped_job(qtbot, runner, binaries, settings
     assert len(got) == 1 and not runner.server_loaded() and not runner.is_running()
 
 
+# Two parts (15 lines each go to the helper at a time), a misheard word in each.
+TWO_PARTS = ["این کتاب انقاشی داره"] + [f"خط شماره {i}" for i in range(2, 20)] + ["اون هم انقاشی داره"]
+
+
+def test_gpu_crash_while_fixing_finishes_on_the_processor(qtbot, runner, binaries, settings, fake_llama,
+                                                          tmp_path, monkeypatch):
+    import json
+    log = tmp_path / "starts.jsonl"
+    monkeypatch.setenv("FAKE_LLAMA_LOG", str(log))
+    binaries({"vulkan": "diefix", "cpu": "fix"})
+    fallbacks = []
+    runner.fallback.connect(lambda: fallbacks.append(1))
+    with qtbot.waitSignal(runner.finished, timeout=30000) as blocker:
+        runner.start(TWO_PARTS, [], settings)
+    fixes = blocker.args[0]
+    # Part 1 was answered on the graphics card (echoed); only part 2 went to the processor (fixed).
+    assert [f.reason for f in fixes].count("missing") == 0
+    assert (fixes[0].reason, fixes[-1].reason) == ("same", "fixed")
+    assert fixes[-1].proposed == "اون هم نقاشی داره"
+    assert fallbacks and runner.gpu_failed and not runner._server.gpu
+    assert runner._server.binary == fake_llama("fix")
+
+    # For the rest of the session the helper starts straight on the processor.
+    runner.stop_server()
+    with qtbot.waitSignal(runner.finished, timeout=30000):
+        runner.start(TWO_PARTS, [], settings)
+    assert runner._server.binary == fake_llama("fix") and not runner._server.gpu
+    starts = [json.loads(l) for l in log.read_text("utf-8").splitlines()]
+    assert ["-ngl" in a for a in starts] == [False, True, True]
+
+
+def test_fallback_while_fixing_shows_loading_again(qtbot, local, binaries, raw_file):
+    binaries({"vulkan": "ok"})
+    local.start(str(raw_file), [], "fa")
+    with qtbot.waitSignal(local.review_ready, timeout=20000):
+        pass
+    local._set_state("fixing")
+    local.bar.setValue(50)
+    local._on_fallback()
+    assert local.state() == "loading" and local.bar.value() == 0 and not local.fallback_note.isHidden()
+
+
 # --- the window -----------------------------------------------------------------------
 def test_local_button_opens_loading_then_review(qtbot, window, binaries, raw_file):
     binaries({"vulkan": "fix"})
