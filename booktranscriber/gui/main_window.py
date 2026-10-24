@@ -9,6 +9,8 @@ from .. import paths
 from ..i18n import I18n
 from ..settings import Settings, save_settings
 from .runners import SetupRunner, TranscribeRunner
+from .flow_view import FlowView
+from .home_view import HomeView
 from .setup_view import SetupView
 
 PAGES = ("setup", "home", "flow", "export", "review")
@@ -56,6 +58,13 @@ class MainWindow(QMainWindow):
         self.setup_view = SetupView(i18n, settings, self.setup_runner)
         self.setup_view.completed.connect(self._on_setup_completed)
         self.set_page_widget("setup", self.setup_view)
+        self.home_view = HomeView(i18n, settings)
+        self.flow_view = FlowView(i18n, settings, self.transcriber)
+        self.home_view.audio_selected.connect(self._open_audio)
+        self.home_view.recent_opened.connect(self._open_recent)
+        self.flow_view.back_home.connect(self._go_home)
+        self.set_page_widget("home", self.home_view)
+        self.set_page_widget("flow", self.flow_view)
 
         i18n.language_changed.connect(self._on_language)
         self._on_language(i18n.language)
@@ -90,6 +99,18 @@ class MainWindow(QMainWindow):
         for f, v in vars(new).items():
             setattr(self.settings, f, v)
         self.save_settings()
+        self.show_page("home")
+
+    def _open_audio(self, audio: str) -> None:
+        self.flow_view.begin(audio)
+        self.show_page("flow")
+
+    def _open_recent(self, item) -> None:
+        self.flow_view.open_result(item)
+        self.show_page("flow")
+
+    def _go_home(self) -> None:
+        self.home_view.refresh_recents()
         self.show_page("home")
 
     def busy(self) -> bool:
