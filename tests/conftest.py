@@ -25,6 +25,13 @@ def registry_calls(monkeypatch):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def no_update_check(monkeypatch):
+    """No test asks GitHub for the latest release; one that wants an answer replaces this."""
+    from booktranscriber import updates
+    monkeypatch.setattr(updates, "check_latest", lambda *a, **k: None)
+
+
 @pytest.fixture
 def wav_file(tmp_path):
     """2 s of 16 kHz mono silence."""

@@ -43,4 +43,5 @@ def main(argv=None) -> int:
     w = MainWindow(i18n, settings)
     w.show()
     w.check_downloads_folder()
+    w.check_for_updates()
     return app.exec()
