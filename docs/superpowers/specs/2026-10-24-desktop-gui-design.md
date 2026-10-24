@@ -123,22 +123,43 @@ or split lines.** The prompt includes the seed names as the authoritative spelli
 Filler words and colloquial speech are kept.
 
 ### 5.2 Local AI helper
-- **Runtime:** a prebuilt **`llama-server`** binary from llama.cpp releases, downloaded during
-  setup in the build that matches the machine (CUDA on NVIDIA, Vulkan on other Win/Linux GPUs, Metal on
-  Apple Silicon, CPU otherwise). It runs as a subprocess on `127.0.0.1` with a random port. *(Builder's
-  call, my recommendation: avoid bundling GPU builds of `llama-cpp-python`, which is the
-  packaging trap.)*
-- **Model:** one GGUF model is chosen automatically from VRAM and RAM. The user never sees a model
-  list. Candidates are Gemma 3 and Qwen3 at roughly 4B for ≤6 GB VRAM and roughly 12B / 8B where it fits.
-  *Final choice is the builder's after evaluation (below).*
-- **Line protocol:** send numbered lines with timestamps stripped and require the same numbered lines back.
-  Chunks are sized to the model's context with room left for output, since Persian uses many tokens per
-  word. The previous chunk's last few lines are included as read-only context.
-- **Guardrails:** any line where the response is missing, malformed, or edited more than a
-  misheard-word fix would plausibly need (an edit-distance ratio threshold, for example) **keeps the original
-  line**. A wrong line count for a chunk means one retry, then that chunk keeps its originals.
-- **Memory:** the LLM starts only after the Whisper process has ended. `llama-server` is stopped when the fix
-  finishes or is cancelled.
+*(Revised 2026-10-24 after testing on the owner's laptop: RTX 4050 6 GB, Ubuntu.)*
+
+- **Runtime:** a prebuilt **`llama-server`** from llama.cpp release **`b11539`** (2026-10-09), pinned with
+  the release's sha256 for each archive. It runs as a subprocess on `127.0.0.1` with a random free port.
+  - **One general GPU route (owner's decision: "the solution should stay general"):** the **Vulkan**
+    build on Windows and Linux, which works on NVIDIA, AMD and Intel graphics, and the **Metal** build
+    (`macos-arm64`) on Apple Silicon. No CUDA-specific build.
+  - **CPU build** is always downloaded too (about 20 MB) as the automatic fallback: if the GPU build fails
+    to start or crashes, the app retries on the CPU build and tells the user in plain words.
+- **Model:** one GGUF model is chosen automatically from graphics memory and RAM; the user never sees
+  a model list. The tested candidates and the tier table are in §5.4.
+- **Loading takes time, and the app says so (owner's request).** Measured on the owner's laptop:
+  105 s for Gemma 4 E4B and 217–302 s for Qwen 3.5 4B, every start (not a one-time cost).
+  - While loading, the app shows "Loading the AI helper — this can take a few minutes" with a **progress
+    bar**. The bar follows the stages llama-server logs (model metadata → tensors → context → warm-up →
+    ready). The app remembers how long loading took last time on this computer, so from the second time the
+    bar can show a realistic time left.
+  - Nothing may assume loading is fast.
+- **Stays loaded for the session.** The model loads the first time the user clicks **Fix it here** and
+  stays loaded while the app is open, so later fixes start immediately. Because Whisper and the helper
+  do not both fit in 6 GB, `llama-server` is **stopped before any new transcription starts**, and when
+  the app closes.
+- **Local prompt.** Small models given the export prompt (§5.1) changed nothing at all, so local models
+  get a stronger prompt that keeps the same rules. It states that the lines *do* contain
+  recognition errors, says to keep colloquial Persian as spoken, and includes one worked Persian example.
+  That example must not overlap the test transcript, because an overlapping example inflates the
+  results (observed).
+- **Line protocol:** about 15 numbered lines per request, timestamps stripped; the same numbered lines
+  must come back. A chunk whose answer is missing lines gets one retry, then keeps its originals.
+- **Guardrails** (shared with §5.3):
+  - A line that is missing or malformed in the answer, or edited more than a misheard-word fix plausibly
+    needs (edit-distance ratio), **keeps the original**.
+  - New: a proposal that **drops a word without replacing it** is rejected. Observed: «یه چی بگیر بخوریم»
+    → «یه چی بخوریم».
+- **Presented as a first pass.** The result screen and the review screen say the local helper makes
+  mistakes and that each change should be checked. The online AI (§5.3) stays the recommended route for
+  best quality.
 - **Acceptance test:** on at least one of the owner's real Persian transcripts, the local fix
   must not make it worse, judged by the owner. If no candidate model passes on a given hardware tier,
   that tier's checkbox defaults to unticked and the result screen recommends the export route.
@@ -151,6 +172,13 @@ Filler words and colloquial speech are kept.
 - A **Paste corrected text** box for each part (or one box for everything) brings the answers back. The app re-aligns lines
   using the line numbers, applies the same guardrails as §5.2, and opens the review screen.
 - This route needs no download and always works, even on weak machines.
+
+### 5.4 Model evaluation (owner's laptop, 5-minute real Persian transcript, Vulkan)
+| Model (GGUF) | Size | Load | Fix time | Result |
+|---|---|---|---|---|
+| Qwen 3.5 4B Q4_K_M | 2.7 GB | 217–302 s | 93 s | 11 changes, mostly half-space spacing; missed every real error. **Rejected.** |
+| Gemma 4 E4B IQ4_XS | 4.7 GB | 105 s | 29 s | Export prompt: no changes. Local prompt: 29 changes, about 13 right, about 8 wrong (one dropped a word), several unsure; missed «عدویات», «علی رزا». |
+| Gemma 4 12B IQ4_XS | 6.4 GB | *pending* | *pending* | *pending* |
 
 ## 6. Architecture
 
