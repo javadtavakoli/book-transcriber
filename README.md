@@ -40,8 +40,11 @@ Persian (switch with the **فا / EN** button).
   rewrote too much are kept as they were.
 - **Fix it here (private), optional**: setup has a checkbox for a small AI helper that
   runs on your own computer, so nothing leaves it. It is a download of about 4.8 GB on
-  a computer like the author's laptop (RTX 4050); weaker computers get a smaller choice
-  with the box unticked. It is a **first pass and it makes mistakes**: check every
+  a computer like the author's laptop (RTX 4050). Computers with a bigger graphics card
+  (10 GB or more) or a Mac with 24 GB or more get a larger, better model (about
+  6.4 GB). Computers without a suitable graphics card get the same 4.8 GB download
+  running on the processor, which is slower, with the box unticked; ChatGPT, Claude or
+  Gemini is the better choice there. It is a **first pass and it makes mistakes**: check every
   change in the review screen. ChatGPT, Claude or Gemini (above) still give the best
   Persian quality.
 - **Loading takes a few minutes.** Each time the app starts the helper it has to load
