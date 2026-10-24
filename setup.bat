@@ -3,7 +3,7 @@ rem One-time setup: create venv and install dependencies.
 cd /d "%~dp0"
 py -3 -m venv venv || python -m venv venv || goto :fail
 venv\Scripts\python.exe -m pip install --upgrade pip || goto :fail
-venv\Scripts\python.exe -m pip install -r requirements.txt || goto :fail
+venv\Scripts\python.exe -m pip install -r requirements-gui.txt || goto :fail
 echo.
 echo Setup complete. Drag an audio file onto run.bat, or run: run.bat -h
 pause

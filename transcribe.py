@@ -28,7 +28,7 @@ PROG       = os.path.join(HERE, ".transcribe_progress.txt")
 def setup_gpu_libs():
     """Make bundled CUDA libs (nvidia-* pip wheels) discoverable."""
     from booktranscriber import gpu
-    libdirs = gpu.nvidia_lib_dirs(gpu.site_nvidia_roots(), WINDOWS)
+    libdirs = gpu.default_lib_dirs()   # venv wheels, plus any the desktop app downloaded
     if WINDOWS:
         # Windows: register the DLL dirs in-process (no re-exec; execv on Windows
         # spawns a detached child and breaks the console / .bat).
