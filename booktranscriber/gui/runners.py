@@ -258,14 +258,25 @@ class _LocalFixThread(QThread):
             if server is None or not server.is_ready():
                 if server is not None:
                     server.stop()       # it died since the last job
-                r._server = None
                 server = start_with_fallback(self.settings, self.load_progress.emit, self.cancel,
                                              self.fallback.emit)
-                r._server = server      # set before fixing, so stop_server() can reach it
+                # Set before fixing, so stop_server() can reach it. A cancelled job still winding
+                # down may have loaded one just now too: keep a single helper.
+                with r._server_lock:
+                    if r._server is not None and r._server is not server and r._server.is_ready():
+                        server.stop()
+                        server = r._server
+                    else:
+                        r._server = server
                 self.loaded.emit()
             fixes = fix_transcript(self.lines, self.names, server.port, self.fix_progress.emit, self.cancel)
             if self.cancel.is_set():    # stopped during the last part: the answers may be cut short
                 raise DownloadCancelled()
+            spoken = [f for f in fixes if f.original]
+            if spoken and all(f.reason == "missing" for f in spoken):
+                # Not a single answer (every request failed): an error to retry, not an empty review.
+                self.error.emit("unknown" if server.is_ready() else "crash")
+                return
             self.done.emit(fixes)
         except DownloadCancelled:
             self.error.emit("cancelled")
@@ -296,8 +307,10 @@ class LocalFixRunner(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._thread: _LocalFixThread | None = None
+        self._winding_down: list[_LocalFixThread] = []   # cancelled jobs finishing their current part
         self._cancel = threading.Event()
         self._server = None     # the LlamaServer, kept loaded between jobs
+        self._server_lock = threading.Lock()
         self._settings = None
         self._live = False      # the current job's results are still wanted
 
@@ -311,7 +324,11 @@ class LocalFixRunner(QObject):
     def start(self, raw_lines: list[str], names: list[str], settings) -> None:
         if self._thread is not None:
             self._cancel.set()
-            self._thread.wait()     # a cancelled job finishes its current part first
+            # A cancelled job finishes its current part first (a minute on the processor); let it,
+            # rather than freeze the window. Its late results are dropped.
+            self._winding_down = [t for t in self._winding_down if t.isRunning()]
+            if self._thread.isRunning():
+                self._winding_down.append(self._thread)
         self._cancel = threading.Event()
         self._settings, self._live = settings, True
         t = _LocalFixThread(self, list(raw_lines), list(names), settings, self._cancel)
@@ -336,8 +353,10 @@ class LocalFixRunner(QObject):
         self.cancel()
         if self._server is not None:
             self._server.stop()     # an answer being waited for fails at once
-        if self._thread is not None:
-            self._thread.wait()     # loading and fixing both check the cancel flag
+        for t in [*self._winding_down, self._thread]:
+            if t is not None:
+                t.wait()            # loading and fixing both check the cancel flag
+        self._winding_down = []
         # Loading may have finished just before the cancel arrived.
         if self._server is not None:
             self._server.stop()

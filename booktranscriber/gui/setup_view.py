@@ -167,10 +167,13 @@ class SetupView(QWidget):
         model = make_plan(self.info, None).whisper_model
         self.existing = find_existing_model([root / "models"], model) if root else None
         self.reuse_box.setVisible(self.existing is not None)
-        # Ticked by default only if this computer runs the helper well (spec §4.1).
+        # Ticked by default only if this computer runs the helper well (spec §4.1), and it fits:
+        # otherwise Start would be disabled until the person thinks of unticking it.
         recommended = choose_llm(self.info)[1]
+        reuse = self.existing if self.reuse_box.isChecked() else None
+        fits = self.info.free_bytes >= make_plan(self.info, reuse, include_llm=True).needed_bytes
         self.llm_box.blockSignals(True)
-        self.llm_box.setChecked(recommended)
+        self.llm_box.setChecked(recommended and fits)
         self.llm_box.blockSignals(False)
         self.llm_weak.setVisible(not recommended)
         self._update_welcome()

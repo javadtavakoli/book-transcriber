@@ -120,6 +120,11 @@ def test_setup_llm_checkbox_follows_recommendation(qtbot, monkeypatch):
     v.start()
     assert not runner.starts[-1][0].include_llm and v.rows["llm"].isHidden()
 
+    # A good computer short on space: unticked, so Start isn't blocked by the optional helper.
+    monkeypatch.setattr(setup_view, "detect_system", lambda d: SystemInfo("linux", OK.gpu, 7 * 10**9))
+    v.refresh()
+    assert not v.llm_box.isChecked() and v.start_button.isEnabled()
+
 
 def test_setup_disk_error_offers_skip_ai_helper(qtbot, monkeypatch):
     monkeypatch.setattr(setup_view, "find_existing_model", lambda dirs, model: None)
@@ -378,3 +383,49 @@ def test_review_banner_for_local_route(qtbot, raw_file):
     assert v.local_banner.text() == "Made by the AI helper on your computer. Check each change."
     v.load(str(raw_file), ["a"], fixes, "fa")
     assert v.local_banner.isHidden()
+
+
+# --- failures while fixing, and starting again while a cancelled job winds down ---------
+def test_no_answers_at_all_is_an_error_not_an_empty_review(qtbot, local, binaries, raw_file):
+    binaries({"vulkan": "http500"})
+    got = []
+    local.review_ready.connect(got.append)
+    local.start(str(raw_file), [], "fa")
+    qtbot.waitUntil(lambda: local.state() == "error", timeout=20000)
+    assert not local.retry_button.isHidden() and got == []
+
+
+@pytest.fixture
+def slow_fix(runner, monkeypatch):
+    """fix_transcript that holds each part until released; released at teardown, before the runner stops."""
+    from booktranscriber.fixexport import apply_answer
+    from booktranscriber.gui import runners
+    release, calls = __import__("threading").Event(), []
+
+    def fake(lines, names, port, on_progress, cancel, client=None):
+        calls.append(port)
+        release.wait()
+        return apply_answer(lines, {2: "این کتاب نقاشی داره"})
+    monkeypatch.setattr(runners, "fix_transcript", fake)
+    yield release, calls
+    release.set()
+
+
+def test_starting_again_while_cancelled_part_finishes_does_not_freeze(qtbot, runner, binaries, settings, slow_fix):
+    import time
+    release, calls = slow_fix
+    binaries({"vulkan": "ok"})
+    got = []
+    runner.finished.connect(got.append)
+    runner.start(LINES, [], settings)
+    qtbot.waitUntil(lambda: len(calls) == 1, timeout=20000)
+    runner.cancel()
+    t0 = time.monotonic()
+    runner.start(LINES, [], settings)
+    assert time.monotonic() - t0 < 0.5
+    qtbot.waitUntil(lambda: len(calls) == 2, timeout=5000)
+    assert calls[0] == calls[1]          # the same loaded helper, not a second one
+    release.set()
+    qtbot.waitUntil(lambda: bool(got) and not runner.is_running(), timeout=5000)
+    qtbot.wait(200)
+    assert len(got) == 1 and runner.server_loaded()
