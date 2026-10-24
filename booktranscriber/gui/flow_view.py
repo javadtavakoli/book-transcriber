@@ -56,6 +56,7 @@ class FlowView(QWidget):
         self.before_transcribe = before_transcribe   # frees the graphics card (stops the AI helper)
         self.llm_download = SetupRunner(self)
         self._llm_pick: tuple[str, str] | None = None
+        self._llm_recommended = True    # whether this computer runs the helper well (checked with _llm_pick)
         self._download_for = None
         self._llm_progress = None     # the download's last SetupProgress, to show in words
         self.audio = None
@@ -391,6 +392,11 @@ class FlowView(QWidget):
             b.setMinimumHeight(56)
             choices.addWidget(b)
         lay.addLayout(choices)
+        self.local_weak = body_label()
+        self.local_weak.setObjectName("local_weak")
+        self.local_weak.setStyleSheet("color: #b9770e;")
+        self.local_weak.hide()
+        lay.addWidget(self.local_weak)
         self.local_bar = QProgressBar()
         self.local_bar.setRange(0, 100)
         self.local_bar.setTextVisible(False)
@@ -430,17 +436,22 @@ class FlowView(QWidget):
         """(model key, backend) for this computer; checked once, since it asks the graphics card."""
         if self._llm_pick is None:
             info = detect_system(paths.data_dir())
-            self._llm_pick = (choose_llm(info)[0], choose_backend(info))
+            model, self._llm_recommended = choose_llm(info)
+            self._llm_pick = (model, choose_backend(info))
         return self._llm_pick
 
     def _update_local_button(self) -> None:
         tr = self.i18n.tr
         if self.llm_ready():
             first = tr("result.local")
+            weak = False
         else:
             size = MODELS[self._llm_choice()[0]].size + LLM_RUNTIME_ESTIMATE
             first = tr("result.local_download", size=fmt_bytes(size, self.i18n.language))
+            weak = not self._llm_recommended    # say so before a big download that may disappoint
         self.local_button.setText(first + "\n" + tr("result.local_hint"))
+        self.local_weak.setText(tr("setup.llm_weak"))
+        self.local_weak.setVisible(weak)
         self.local_problem.setText(tr("result.local_download_failed"))
 
     def _request_local(self) -> None:

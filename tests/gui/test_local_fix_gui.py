@@ -391,6 +391,28 @@ def test_download_failure_lets_you_try_again(qtbot, settings, raw_file, monkeypa
     v.llm_download.stop_and_wait()
 
 
+@pytest.mark.parametrize("info,warned", [(WEAK, True), (OK, False)])
+def test_download_later_warns_when_not_recommended(qtbot, settings, raw_file, monkeypatch, info, warned):
+    monkeypatch.setattr(flow_view, "detect_system", lambda d: info)
+    settings.llm_model_path = None
+    v = FlowView(I18n("en"), settings, FakeTranscriber())
+    qtbot.addWidget(v)
+    v.open_result(RecentItem(str(raw_file.with_name("s12.m4a")), str(raw_file), None, "t"), from_recents=True)
+    assert v.local_button.text().startswith("Download the AI helper")
+    assert v.local_weak.isHidden() is not warned
+    assert "may be slow" in v.local_weak.text()
+    from booktranscriber.gui.widgets import PRIMARY       # the online route stays the recommended one
+    assert v.export_button.styleSheet() == PRIMARY and v.local_button.styleSheet() != PRIMARY
+
+
+def test_no_slowness_warning_once_downloaded(qtbot, settings, raw_file, monkeypatch):
+    monkeypatch.setattr(flow_view, "detect_system", lambda d: WEAK)
+    v = FlowView(I18n("en"), settings, FakeTranscriber())
+    qtbot.addWidget(v)
+    v.open_result(RecentItem(str(raw_file.with_name("s12.m4a")), str(raw_file), None, "t"), from_recents=True)
+    assert v.local_button.text().startswith("Fix it here") and v.local_weak.isHidden()
+
+
 # --- review -------------------------------------------------------------------------------
 def test_review_banner_for_local_route(qtbot, raw_file):
     v = ReviewView(I18n("en"))
