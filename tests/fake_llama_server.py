@@ -2,7 +2,7 @@
 
 Usage: fake_llama_server.py <mode> --port N [real llama-server arguments, unknown ones ignored]
 Modes: ok, slow (echo answers), fix (echo with one spelling fixed), think (echo after a
-<think> block), http500 (chat fails), oom and crash (exit during load), hang (never ready).
+<think> block), dropfirst (first answer omits its last line, later ones echo), http500 (chat fails), oom and crash (exit during load), hang (never ready).
 If FAKE_LLAMA_LOG is set, the argument list is appended to that file as one JSON line.
 """
 import argparse
@@ -35,6 +35,7 @@ OOM_LINES = [
 LOADING = {"error": {"message": "Loading model", "type": "unavailable_error", "code": 503}}
 
 ready = threading.Event()
+chats = []   # one entry per chat request answered
 
 
 def log(line: str) -> None:
@@ -48,6 +49,8 @@ def answer(mode: str, body: dict) -> str:
         lines = lines.replace("انقاشی", "نقاشی")
     if mode == "think":
         lines = "<think>\nThe user wants spelling fixes. Let me check each line.\n</think>\n" + lines
+    if mode == "dropfirst" and not chats:
+        lines = "\n".join(lines.splitlines()[:-1])
     return lines
 
 
@@ -79,6 +82,7 @@ def make_handler(mode: str):
                 return self._send(500, {"error": {"message": "fake failure", "type": "server_error",
                                                   "code": 500}})
             content = answer(mode, body)
+            chats.append(body)
             self._send(200, {
                 "id": "chatcmpl-fake", "object": "chat.completion", "model": "fake",
                 "choices": [{"index": 0, "finish_reason": "stop",
