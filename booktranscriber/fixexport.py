@@ -91,10 +91,18 @@ def parse_answer(text: str) -> dict[int, str]:
     return {n: bracketed.get(n, plain.get(n)) for n in sorted(bracketed.keys() | plain.keys())}
 
 
+def _drops_word(a: str, b: str) -> bool:
+    """A word removed with no word added right before or after it. Merges and replacements are fine."""
+    kinds = [kind for kind, _ in word_diff(a, b)]
+    return any(kind == "removed" and "added" not in kinds[max(i - 1, 0): i + 2]
+               for i, kind in enumerate(kinds))
+
+
 def _too_different(a: str, b: str, max_change: float) -> bool:
     wa, wb = len(a.split()), len(b.split())
     return (1 - SequenceMatcher(None, a, b).ratio() > max_change
-            or abs(wa - wb) > max(2, wa // 4))
+            or abs(wa - wb) > max(2, wa // 4)
+            or _drops_word(a, b))
 
 
 def apply_answer(lines: list[str], answer: dict[int, str], max_change: float = MAX_CHANGE_RATIO) -> list[LineFix]:

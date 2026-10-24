@@ -73,6 +73,19 @@ def test_apply_answer_rejects_deleted_line():
     assert fixes[0].reason == "too_different"
 
 
+def test_dropped_word_is_rejected():
+    fixes = apply_answer(["یه چی بگیر بخوریم"], {1: "یه چی بخوریم"})
+    assert fixes[0].reason == "too_different" and not fixes[0].accepted
+
+
+def test_merged_words_still_allowed():
+    assert apply_answer(["علی رزا نقاشه"], {1: "علیرضا نقاشه"})[0].reason == "fixed"
+
+
+def test_replaced_word_still_allowed():
+    assert apply_answer(["زندگیم با انقاشی میکنه"], {1: "زندگیم با نقاشی میکنه"})[0].reason == "fixed"
+
+
 def test_word_diff():
     assert word_diff("تعغیب حومر حرف", "تعقیب هومر حرف") == [
         ("removed", "تعغیب حومر"), ("added", "تعقیب هومر"), ("same", "حرف")]
