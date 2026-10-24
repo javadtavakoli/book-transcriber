@@ -11,4 +11,5 @@ def test_window_has_icon(qtbot):
     w = MainWindow(I18n("en"), Settings())
     qtbot.addWidget(w)
     assert not QApplication.windowIcon().isNull()
+    assert not w.windowIcon().isNull()
     assert QApplication.applicationName() == "Writing Parrot"

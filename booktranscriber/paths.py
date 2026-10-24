@@ -23,7 +23,31 @@ def migrate_old_data_dir() -> bool:
         os.rename(old, new)
     except OSError:
         return False
+    _repoint_settings(old, new)
     return True
+
+
+def _repoint_settings(old: Path, new: Path) -> None:
+    """Stored model paths that lay under the old folder now point into the new one."""
+    import json
+    from .settings import write_json_atomic
+    f = new / "settings.json"
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        changed = False
+        for key in ("whisper_model_path", "llm_model_path"):
+            v = data.get(key)
+            if isinstance(v, str):
+                try:
+                    rel = Path(v).relative_to(old)
+                except ValueError:
+                    continue
+                data[key] = str(new / rel)
+                changed = True
+        if changed:
+            write_json_atomic(f, data)
+    except (OSError, ValueError, AttributeError):
+        pass
 
 
 def asset(name: str) -> Path:

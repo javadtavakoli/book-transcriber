@@ -23,6 +23,12 @@ def apply_app_identity(app) -> None:
             pass
 
 
+def prepare_data() -> None:
+    """Migrate first: anything that touches data_dir() would create the new folder and block it."""
+    paths.migrate_old_data_dir()
+    reap_stale()    # an AI helper left running by an earlier run that crashed would hold the graphics memory
+
+
 def main(argv=None) -> int:
     app = QApplication(sys.argv if argv is None else argv)
     apply_app_identity(app)
@@ -30,9 +36,8 @@ def main(argv=None) -> int:
     font.setFamilies([font.family(), "Vazirmatn", "Noto Sans Arabic"])   # Persian fallbacks
     app.setFont(font)
 
-    reap_stale()    # an AI helper left running by an earlier run that crashed would hold the graphics memory
+    prepare_data()
     from .main_window import MainWindow
-    paths.migrate_old_data_dir()
     settings = load_settings(paths.settings_file())
     i18n = I18n(initial_language(settings.ui_language, QLocale.system().name()))
     w = MainWindow(i18n, settings)

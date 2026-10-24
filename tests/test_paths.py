@@ -50,3 +50,27 @@ def test_migrate_skips_with_bt_data_dir(tmp_path, monkeypatch):
 def test_asset_exists():
     assert paths.asset("icon.ico").is_file()
     assert paths.asset("icon.png").is_file()
+
+
+def test_migrate_repoints_model_paths(tmp_path, monkeypatch):
+    import json
+    old, new = _fake_platform(tmp_path, monkeypatch)
+    (old / "models").mkdir(parents=True)
+    other = tmp_path / "elsewhere" / "w"
+    (old / "settings.json").write_text(json.dumps({
+        "whisper_model_path": str(old / "models" / "w"), "llm_model_path": str(other), "ui_language": "fa"}))
+    assert paths.migrate_old_data_dir() is True
+    data = json.loads((new / "settings.json").read_text())
+    assert data["whisper_model_path"] == str(new / "models" / "w")
+    assert data["llm_model_path"] == str(other) and data["ui_language"] == "fa"
+
+
+def test_prepare_data_migrates_before_reap_creates_folder(tmp_path, monkeypatch):
+    from booktranscriber.gui import app as gapp
+    old, new = _fake_platform(tmp_path, monkeypatch)
+    old.mkdir()
+    (old / "settings.json").write_text("{}")
+    monkeypatch.setattr(paths, "data_dir_path", lambda: new)    # reap_stale's folder is the new one
+    monkeypatch.setattr(gapp, "reap_stale", lambda: paths.data_dir())
+    gapp.prepare_data()
+    assert (new / "settings.json").is_file() and not old.exists()
