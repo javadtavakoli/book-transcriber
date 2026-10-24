@@ -106,4 +106,9 @@ The Tests workflow passed on Ubuntu, Windows and macOS (Windows is now a require
 - The stage 3 spec and plan are in `docs/superpowers/specs/2026-10-25-stage3-windows-design.md` and `docs/superpowers/plans/2026-10-25-stage3-windows.md`.
 
 ## Release result
-(Filled in after the tag's run, below.)
+- **First v0.1.0 tag build (run 40141969623):** it failed in the test step with an intermittent Windows "access violation". The cause was old stage 2 code calling `QObject.sender()` in a queued slot after the sending thread had been destroyed. Nothing was published, because the draft step never ran.
+- **Fix:** commit 77afe0b. Runners now bind a per-job token at connect time instead of using `sender()`. It was reviewed and approved, and tests passed on Ubuntu, Windows and macOS.
+- **Ruling:** the v0.1.0 tag was deleted on GitHub and re-created at the fixed commit. That was safe only because nothing had been published. The cost: anyone who fetched the old tag in those minutes sees it move.
+- **Deferred minors from that fix:**
+  - The `p.disconnect(self)` line in runners.py now does nothing.
+  - The two new stale-signal tests are weak: they don't go through `start()` or exercise the token itself.
