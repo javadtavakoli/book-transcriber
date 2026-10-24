@@ -38,6 +38,16 @@ Persian (switch with the **فا / EN** button).
   every change side by side (each one can be undone) before the corrected
   `<name> - متن اصلاح‌شده.txt` is saved next to the raw transcript. Lines the AI
   rewrote too much are kept as they were.
+- **Fix it here (private), optional**: setup has a checkbox for a small AI helper that
+  runs on your own computer, so nothing leaves it. It is a download of about 4.8 GB on
+  a computer like the author's laptop (RTX 4050); weaker computers get a smaller choice
+  with the box unticked. It is a **first pass and it makes mistakes**: check every
+  change in the review screen. ChatGPT, Claude or Gemini (above) still give the best
+  Persian quality.
+- **Loading takes a few minutes.** Each time the app starts the helper it has to load
+  it into memory (about 100 s measured on an RTX 4050 laptop), with a progress bar. It
+  then stays loaded while the app is open, and is unloaded before each new
+  transcription so the speech model has the graphics memory.
 
 The app keeps its downloads and settings in your user data folder
 (`~/.local/share/BookTranscriber` on Linux), not in the project folder. Windows and
@@ -185,6 +195,11 @@ run.sh / run.bat     launchers for Linux / Windows
 run-gui.sh / .bat    open the desktop app
 setup.sh / setup.bat one-time venv + dependency install
 booktranscriber/     engine shared by the CLI and the desktop app (gui/ = the app's screens)
+  llm_catalog.py       which AI helper model and llama.cpp build fit this computer
+  llm_sources.py       where the helper's files come from; safe unpacking
+  llm_server.py        runs llama-server: load progress, CPU fallback, no orphans
+  local_fix.py         fixes a transcript in small numbered chunks via llama-server
+  gui/local_view.py    the "Fix it here" screen
 prompts/             example prompt files (one per book/session)
 requirements.txt     pinned dependencies (CLI)
 requirements-gui.txt   + desktop app

@@ -180,6 +180,8 @@ Filler words and colloquial speech are kept.
 | Gemma 4 E4B IQ4_XS | 4.7 GB | 105 s | 29 s | Export prompt: no changes. Local prompt: 29 changes, about 13 right, about 8 wrong (one dropped a word), several unsure; missed «عدویات», «علی رزا». |
 | Gemma 4 12B IQ4_XS | 6.4 GB | 81 s | 356 s | Partial offload (4.6 GB on GPU, rest on CPU). About 20 right («گادلی»→«گالری», «علی رزا»→«علی رضا», «عنر»→«هنر», «سورالیست»→«سورئالیسم»), about 9 wrong (one changed tense). Better quality, but about 12× slower than E4B on a 6 GB card. |
 
+End-to-end with the app's own code (Gemma 4 E4B): load 102–106 s; the 5-minute transcript fixed in 32 s; 30 lines fixed, 65 unchanged, 1 rejected by the dropped-word guardrail.
+
 **Tiers** (`llm_catalog.choose_llm`; my call from these results):
 
 | Computer | Model | Pre-ticked in setup |
