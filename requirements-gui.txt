@@ -2,3 +2,4 @@
 -r requirements.txt
 PySide6==6.12.0
 platformdirs==4.13.5
+httpx==0.28.1

@@ -128,3 +128,13 @@ def test_http_error_status_is_network_error(tmp_path):
     client = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(404)))
     with pytest.raises(NetworkError):
         download_file("http://example.invalid/x", tmp_path / "f.bin", 10, None, noop, threading.Event(), client=client)
+
+
+def test_checksum_pass_honours_cancel(tmp_path):
+    from booktranscriber.downloader import _sha256
+    f = tmp_path / "big.bin"
+    f.write_bytes(b"x" * (3 * 1024 * 1024))
+    ev = threading.Event()
+    ev.set()
+    with pytest.raises(DownloadCancelled):
+        _sha256(f, ev)

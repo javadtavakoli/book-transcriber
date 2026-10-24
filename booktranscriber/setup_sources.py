@@ -43,8 +43,9 @@ def gpu_wheel_files(os_name: str, gpu_dir: Path, client: httpx.Client) -> list[R
     return files
 
 
-def extract_nvidia_libs(wheel: Path, gpu_dir: Path, windows: bool) -> list[Path]:
+def extract_nvidia_libs(wheel: Path, gpu_dir: Path, windows: bool, cancel=None) -> list[Path]:
     """Unpack only nvidia/<pkg>/lib/* (or bin/* on Windows) into gpu_dir, then delete the wheel."""
+    from .downloader import DownloadCancelled
     sub = "bin" if windows else "lib"
     out = []
     with zipfile.ZipFile(wheel) as z:
@@ -57,6 +58,8 @@ def extract_nvidia_libs(wheel: Path, gpu_dir: Path, windows: bool) -> list[Path]
             target.parent.mkdir(parents=True, exist_ok=True)
             with z.open(info) as src, open(target, "wb") as dst:
                 while block := src.read(1024 * 1024):
+                    if cancel is not None and cancel.is_set():
+                        raise DownloadCancelled()
                     dst.write(block)
             out.append(target)
     Path(wheel).unlink()

@@ -5,13 +5,17 @@ from pathlib import Path
 APP_NAME = "BookTranscriber"
 
 
-def data_dir() -> Path:
+def data_dir_path() -> Path:
+    """Where app data lives, without creating anything."""
     env = os.environ.get("BT_DATA_DIR")
     if env:
-        d = Path(env)
-    else:
-        import platformdirs
-        d = Path(platformdirs.user_data_dir(APP_NAME, appauthor=False))
+        return Path(env)
+    import platformdirs
+    return Path(platformdirs.user_data_dir(APP_NAME, appauthor=False))
+
+
+def data_dir() -> Path:
+    d = data_dir_path()
     d.mkdir(parents=True, exist_ok=True)
     return d
 

@@ -168,6 +168,7 @@ class MainWindow(QMainWindow):
         if self.busy() and not self.confirm_quit():
             event.ignore()
             return
+        self.hide()     # disappear at once; stopping a download can take a few seconds
         self.transcriber.cancel()
         self.setup_runner.stop_and_wait()
         event.accept()

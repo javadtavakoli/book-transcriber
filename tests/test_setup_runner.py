@@ -39,7 +39,7 @@ class FakeSources:
     def model_files(self, repo_id, dest_dir):
         return [RemoteFile(f"m{i}", s, None, dest_dir / f"f{i}") for i, s in enumerate(self.model_sizes)]
 
-    def extract_nvidia_libs(self, wheel, gpu_dir, windows):
+    def extract_nvidia_libs(self, wheel, gpu_dir, windows, cancel=None):
         self.extracted.append(wheel.name)
         Path(wheel).unlink()
         return []
@@ -114,14 +114,78 @@ def test_download_errors_map_kind(exc, kind):
 def test_selftest_runs_with_device_and_model_path():
     got = []
     run_setup(make_plan(GPU_INFO, None), Settings(device="cpu"), no_test, threading.Event(), downloader=fake_dl,
-              sources=FakeSources(), selftest=lambda path, device: got.append((path, device)))
+              sources=FakeSources(), selftest=lambda path, device, cancel=None: got.append((path, device)))
     assert got == [(str(paths.models_dir() / "faster-whisper-large-v3"), "cpu")]
 
 
 def test_selftest_error_propagates():
-    def bad(*a):
+    def bad(*a, **k):
         raise SetupError("gpu", "x")
     with pytest.raises(SetupError) as e:
         run_setup(make_plan(GPU_INFO, None), Settings(), no_test, threading.Event(), downloader=fake_dl,
                   sources=FakeSources(), selftest=bad)
     assert e.value.kind == "gpu"
+
+
+def _fake_worker(monkeypatch, code):
+    import sys
+
+    from booktranscriber import worker
+    monkeypatch.setattr(worker, "worker_command", lambda args: [sys.executable, "-c", code])
+
+
+def test_selftest_cancel_kills_child_quickly(monkeypatch):
+    import time
+
+    from booktranscriber.setup_runner import run_selftest
+    _fake_worker(monkeypatch, "import time; time.sleep(60)")
+    cancel = threading.Event()
+    threading.Timer(0.5, cancel.set).start()
+    t0 = time.monotonic()
+    with pytest.raises(SetupError) as e:
+        run_selftest("/m", "cuda", lib_dirs=[], cancel=cancel)
+    assert e.value.kind == "cancelled" and time.monotonic() - t0 < 5
+
+
+@pytest.mark.parametrize("device,kind", [("cuda", "gpu"), ("auto", "gpu"), ("cpu", "test")])
+def test_selftest_native_crash(monkeypatch, device, kind):
+    from booktranscriber.setup_runner import run_selftest
+    _fake_worker(monkeypatch, "import os; os.abort()")
+    with pytest.raises(SetupError) as e:
+        run_selftest("/m", device, lib_dirs=[])
+    assert e.value.kind == kind
+
+
+def test_run_setup_passes_cancel_to_selftest():
+    got = []
+    cancel = threading.Event()
+    run_setup(make_plan(GPU_INFO, None), Settings(), no_test, cancel, downloader=fake_dl,
+              sources=FakeSources(), selftest=lambda path, device, cancel=None: got.append(cancel))
+    assert got == [cancel]
+
+
+def test_disk_check_counts_only_what_is_left(monkeypatch):
+    import shutil
+    from collections import namedtuple
+
+    from booktranscriber import setup_runner
+    plan = make_plan(SystemInfo("linux", None, 10**12), None)      # no GPU libs, turbo model
+    dest = setup_runner.model_dir_for(plan.whisper_model) / "f0"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.with_name("f0.part").write_bytes(b"x" * 500)               # 500 of 600 bytes already here
+    Usage = namedtuple("Usage", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: Usage(10**6, 0, 150))
+    s = run_setup(plan, Settings(), no_test, threading.Event(), downloader=fake_dl,
+                  sources=FakeSources(gpu_sizes=(), model_sizes=(600,)), selftest=no_test)
+    assert s.setup_done
+
+
+def test_disk_error_reports_real_numbers(monkeypatch):
+    import shutil
+    from collections import namedtuple
+    Usage = namedtuple("Usage", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: Usage(10**6, 0, 50))
+    with pytest.raises(SetupError) as e:
+        run_setup(make_plan(SystemInfo("linux", None, 10**12), None), Settings(), no_test, threading.Event(),
+                  downloader=fake_dl, sources=FakeSources(gpu_sizes=(), model_sizes=(600,)), selftest=no_test)
+    assert (e.value.kind, e.value.needed, e.value.free) == ("disk", 600, 50)

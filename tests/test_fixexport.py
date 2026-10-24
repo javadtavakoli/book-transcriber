@@ -76,3 +76,27 @@ def test_apply_answer_rejects_deleted_line():
 def test_word_diff():
     assert word_diff("تعغیب حومر حرف", "تعقیب هومر حرف") == [
         ("removed", "تعغیب حومر"), ("added", "تعقیب هومر"), ("same", "حرف")]
+
+
+def test_parse_answer_keeps_digits_in_text():
+    assert parse_answer("[۲] سلام ۱۲ نفر آمدند") == {2: "سلام ۱۲ نفر آمدند"}
+
+
+def test_echoed_line_with_digits_is_same():
+    lines = ["سلام ۱۲ نفر آمدند"]
+    assert apply_answer(lines, parse_answer("[1] سلام ۱۲ نفر آمدند"))[0].reason == "same"
+
+
+def test_bracket_number_beats_chatter_numbering():
+    text = "Changes I made:\n1. I fixed a name.\n\n[۱] امروز درباره تعقیب هومر حرف زدیم\n[2] خب"
+    assert parse_answer(text) == {1: "امروز درباره تعقیب هومر حرف زدیم", 2: "خب"}
+
+
+def test_markdown_wrapped_numbers():
+    text = "**[2]** نویسنده‌اش\n- [3] خب\n> [4] بله\n* 5. آره"
+    assert parse_answer(text) == {2: "نویسنده‌اش", 3: "خب", 4: "بله", 5: "آره"}
+
+
+def test_bidi_marks_are_ignored_but_zwnj_kept():
+    text = "‏[1] نویسنده‌اش\n‫[2] خب‬\n﻿[3] بله"
+    assert parse_answer(text) == {1: "نویسنده‌اش", 2: "خب", 3: "بله"}

@@ -22,6 +22,15 @@ STATES = ("names", "transcribing", "result")
 LANGUAGE_CHOICES = [("fa", "فارسی"), ("en", "English"), ("ar", "العربية"), ("ru", "Русский"),
                     ("de", "Deutsch"), ("fr", "Français"), ("tr", "Türkçe")]
 DEVICES = ("auto", "cuda", "cpu")
+# Every language Whisper knows (faster_whisper.tokenizer._LANGUAGE_CODES), so a typed code is checked
+# without loading the engine in the GUI process.
+WHISPER_CODES = frozenset(
+    "af am ar as az ba be bg bn bo br bs ca cs cy da de el en es et eu fa fi fo fr gl gu ha haw he hi hr "
+    "ht hu hy id is it ja jw ka kk km kn ko la lb ln lo lt lv mg mi mk ml mn mr ms mt my ne nl nn no oc "
+    "pa pl ps pt ro ru sa sd si sk sl sn so sq sr su sv sw ta te tg th tk tl tr tt uk ur uz vi yi yo zh "
+    "yue".split())
+LANGUAGE_NAMES = {"persian": "fa", "farsi": "fa", "فارسی": "fa", "english": "en", "arabic": "ar",
+                  "russian": "ru", "german": "de", "french": "fr", "turkish": "tr"}
 
 
 def folder_writable(folder: str) -> bool:
@@ -156,13 +165,21 @@ class FlowView(QWidget):
             self.names_edit.setPlainText("\n".join(import_prompt_file(path)))
 
     def language(self) -> str:
+        """The chosen or typed language as a Whisper code; anything unrecognised keeps the saved one."""
         text = self.language_combo.currentText().strip()
         idx = self.language_combo.findText(text)
         if idx >= 0 and self.language_combo.itemData(idx):
             return self.language_combo.itemData(idx)
+        candidates = [text]
         if text.endswith(")") and "(" in text:
-            return text.rsplit("(", 1)[1].rstrip(")").strip()
-        return text or "fa"
+            name, code = text[:-1].rsplit("(", 1)
+            candidates = [code, name]
+        for c in (c.strip().lower() for c in candidates):
+            if c in WHISPER_CODES:
+                return c
+            if c in LANGUAGE_NAMES:
+                return LANGUAGE_NAMES[c]
+        return self.settings.language if self.settings.language in WHISPER_CODES else "fa"
 
     def begin(self, audio: str) -> None:
         self.audio = audio

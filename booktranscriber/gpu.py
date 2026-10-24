@@ -27,8 +27,11 @@ def default_lib_dirs(include_site: bool = True) -> list[str]:
     """Libraries downloaded by the app's setup first, then any in the current venv."""
     from . import paths
     windows = sys.platform == "win32"
-    roots = [str(paths.gpu_dir() / "nvidia")] + (site_nvidia_roots() if include_site else [])
-    return nvidia_lib_dirs(roots, windows)
+    try:
+        app_roots = [str(paths.data_dir_path() / "gpu" / "nvidia")]
+    except ImportError:     # CLI on a venv made before the desktop app existed
+        app_roots = []
+    return nvidia_lib_dirs(app_roots + (site_nvidia_roots() if include_site else []), windows)
 
 
 def gpu_env(lib_dirs: list[str], base: Mapping[str, str], windows: bool) -> dict[str, str]:

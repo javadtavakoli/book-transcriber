@@ -51,3 +51,17 @@ def test_extract_rejects_path_traversal(tmp_path):
         z.writestr("nvidia/cublas/lib/../../../../evil.so", b"x")
     extract_nvidia_libs(whl, tmp_path / "gpu", windows=False)
     assert not (tmp_path / "evil.so").exists()
+
+
+def test_extract_honours_cancel_and_keeps_wheel(tmp_path):
+    import threading
+
+    from booktranscriber.downloader import DownloadCancelled
+    whl = tmp_path / "x.whl"
+    with zipfile.ZipFile(whl, "w") as z:
+        z.writestr("nvidia/cublas/lib/libcublas.so.12", b"so")
+    ev = threading.Event()
+    ev.set()
+    with pytest.raises(DownloadCancelled):
+        extract_nvidia_libs(whl, tmp_path / "gpu", windows=False, cancel=ev)
+    assert whl.exists()

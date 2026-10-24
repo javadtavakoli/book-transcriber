@@ -3,6 +3,7 @@ import os
 import threading
 from dataclasses import dataclass
 
+import shiboken6
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, Signal
 
 from .. import paths
@@ -56,6 +57,7 @@ class TranscribeRunner(QObject):
         return not self._ended and self._proc is not None and self._proc.state() != QProcess.NotRunning
 
     def start(self, job: TranscribeJob) -> None:
+        self._stop_process()        # a previous worker may still be shutting down
         self._job, self._buf, self._stderr, self._ended = job, b"", [], False
         cmd = worker_command(job.args())
         p = QProcess(self)
@@ -63,26 +65,42 @@ class TranscribeRunner(QObject):
         for k, v in worker_env().items():
             env.insert(k, v)
         p.setProcessEnvironment(env)
+        # Every handler checks sender() is still the current process, so a late signal from
+        # an old worker can never affect the job that replaced it.
         p.readyReadStandardOutput.connect(self._on_stdout)
         p.readyReadStandardError.connect(self._on_stderr)
         p.finished.connect(self._on_finished)
+        p.errorOccurred.connect(self._on_error)
         self._proc = p
         p.start(cmd[0], cmd[1:])
 
-    def cancel(self) -> None:
+    def _current(self) -> bool:
+        # Also false while Qt is destroying the process (e.g. the window closing).
+        p = self.sender()
+        return p is not None and p is self._proc and shiboken6.isValid(p)
+
+    def _stop_process(self) -> None:
         p, self._proc = self._proc, None
+        if p is not None:
+            if p.state() != QProcess.NotRunning:
+                p.kill()
+                p.waitForFinished(5000)
+            p.disconnect(self)
+            p.deleteLater()
+
+    def cancel(self) -> None:
         self._ended = True
-        if p is not None and p.state() != QProcess.NotRunning:
-            p.kill()
-            p.waitForFinished(5000)
+        self._stop_process()
         if self._job:
             part = self._job.out + ".part"
             if os.path.exists(part):
                 os.remove(part)
 
     def _on_stdout(self) -> None:
-        if self._proc is None:
-            return
+        if self._current():
+            self._read_stdout()
+
+    def _read_stdout(self) -> None:
         self._buf += bytes(self._proc.readAllStandardOutput())
         *lines, self._buf = self._buf.split(b"\n")
         for raw in lines:
@@ -108,27 +126,45 @@ class TranscribeRunner(QObject):
             self.failed.emit(ev.get("kind", "unknown"), ev.get("message", ""))
 
     def _on_stderr(self) -> None:
-        if self._proc is None:
-            return
+        if self._current():
+            self._read_stderr()
+
+    def _read_stderr(self) -> None:
         text = bytes(self._proc.readAllStandardError()).decode("utf-8", errors="replace")
         with open(paths.logs_dir() / "worker.log", "a", encoding="utf-8") as f:
             f.write(text)
         self._stderr = (self._stderr + text.splitlines())[-STDERR_TAIL:]
 
     def _on_finished(self, code, status) -> None:
-        if self._proc is not None:
-            self._on_stdout()
-            self._on_stderr()
+        if not self._current():
+            return
+        p = self._proc
+        self._read_stdout()
+        self._read_stderr()
         if not self._ended:
+            # Died without telling us why. A crash while using the graphics card is most
+            # likely the GPU libraries, so offer the CPU route; otherwise a generic error.
+            crashed = status == QProcess.CrashExit or code < 0 or code > 128
+            on_gpu = self._job is not None and self._job.device != "cpu"
             self._ended = True
-            self.failed.emit("unknown", "\n".join(self._stderr))
+            self.failed.emit("model" if crashed and on_gpu else "unknown", "\n".join(self._stderr))
         self._proc = None
+        p.deleteLater()
+
+    def _on_error(self, err) -> None:
+        # FailedToStart never reaches finished(); other errors are followed by it.
+        if self._current() and err == QProcess.FailedToStart and not self._ended:
+            p = self._proc
+            self._ended = True
+            self._proc = None
+            p.deleteLater()
+            self.failed.emit("unknown", p.errorString())
 
 
 class _SetupThread(QThread):
     progress = Signal(object)
     done = Signal(object)
-    error = Signal(str)
+    error = Signal(object)      # SetupError
 
     def __init__(self, plan, settings, cancel):
         super().__init__()
@@ -139,11 +175,11 @@ class _SetupThread(QThread):
         try:
             self.done.emit(run_setup(self.plan, self.settings, self.progress.emit, self.cancel))
         except SetupError as e:
-            self.error.emit(e.kind)
+            self.error.emit(e)
         except Exception:
             import traceback
             (paths.logs_dir() / "setup.log").write_text(traceback.format_exc(), "utf-8")
-            self.error.emit("test")
+            self.error.emit(SetupError("test"))
 
 
 class SetupRunner(QObject):
@@ -155,23 +191,31 @@ class SetupRunner(QObject):
         super().__init__(parent)
         self._thread: _SetupThread | None = None
         self._cancel = threading.Event()
+        self.last_error = None
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.isRunning()
 
     def start(self, plan, settings) -> None:
         self._cancel = threading.Event()
+        self.last_error = None
         t = _SetupThread(plan, settings, self._cancel)
         t.progress.connect(self.progress)
         t.done.connect(self.finished)
-        t.error.connect(self.failed)
+        t.error.connect(self._on_error)
         self._thread = t
         t.start()
+
+    def _on_error(self, err) -> None:
+        self.last_error = err
+        self.failed.emit(err.kind)
 
     def pause(self) -> None:
         self._cancel.set()
 
-    def stop_and_wait(self, ms: int = 10000) -> None:
+    def stop_and_wait(self) -> None:
+        """Every setup step checks the cancel flag (downloads within the read timeout), so this
+        returns promptly. Waiting without a deadline means Qt never destroys a running thread."""
         self._cancel.set()
         if self._thread is not None:
-            self._thread.wait(ms)
+            self._thread.wait()

@@ -25,9 +25,9 @@ SELFTEST_TIMEOUT = 600
 
 
 class SetupError(Exception):
-    def __init__(self, kind: str, message: str = ""):
+    def __init__(self, kind: str, message: str = "", needed: int = 0, free: int = 0):
         super().__init__(message or kind)
-        self.kind = kind
+        self.kind, self.needed, self.free = kind, needed, free
 
 
 @dataclass
@@ -61,25 +61,41 @@ def model_dir_for(model: str) -> Path:
     return paths.models_dir() / WHISPER_REPOS[model].split("/")[1]
 
 
-def run_selftest(model_path: str, device: str, lib_dirs: list[str] | None = None) -> None:
+def run_selftest(model_path: str, device: str, lib_dirs: list[str] | None = None,
+                 cancel: threading.Event | None = None) -> None:
     """Transcribe a moment of noise in a worker process, exactly as a real job would run."""
     from .protocol import decode
     from .worker import worker_command, worker_env
     windows = sys.platform == "win32"
-    env = worker_env(lib_dirs)
     kw = {"creationflags": subprocess.CREATE_NO_WINDOW} if windows else {}
-    try:
-        r = subprocess.run(worker_command(["--selftest", "--model", model_path, "--device", device]),
-                           env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           stdin=subprocess.DEVNULL, timeout=SELFTEST_TIMEOUT, **kw)
-    except subprocess.TimeoutExpired as e:
-        raise SetupError("test", "self-test timed out") from e
-    events = [e for e in map(decode, r.stdout.splitlines()) if e]
-    (paths.logs_dir() / "selftest.log").write_text(r.stdout + "\n" + r.stderr, "utf-8")
-    if r.returncode == 0 and events and events[-1]["type"] == "done":
+    log = paths.logs_dir() / "selftest.log"
+    with open(log, "w+", encoding="utf-8", errors="replace") as out:
+        proc = subprocess.Popen(worker_command(["--selftest", "--model", model_path, "--device", device]),
+                                env=worker_env(lib_dirs), stdout=out, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, **kw)
+        deadline = time.monotonic() + SELFTEST_TIMEOUT
+        # Poll instead of blocking, so Pause and closing the window stop the test promptly.
+        while proc.poll() is None:
+            if cancel is not None and cancel.is_set():
+                proc.kill()
+                proc.wait()
+                raise SetupError("cancelled")
+            if time.monotonic() > deadline:
+                proc.kill()
+                proc.wait()
+                raise SetupError("test", "self-test timed out")
+            time.sleep(0.2)
+        out.seek(0)
+        text = out.read()
+    events = [e for e in map(decode, text.splitlines()) if e]
+    if proc.returncode == 0 and events and events[-1]["type"] == "done":
         return
-    kind = next((e["kind"] for e in events if e["type"] == "error"), "unknown")
-    raise SetupError("gpu" if kind == "model" and device != "cpu" else "test", r.stderr[-2000:])
+    kind = next((e["kind"] for e in events if e["type"] == "error"), None)
+    # No error event and an abnormal exit means a native crash; on the graphics card that is
+    # almost always the GPU libraries, so offer "continue without graphics card".
+    crashed = kind is None and (proc.returncode < 0 or proc.returncode > 128)
+    gpu_problem = kind == "model" or crashed
+    raise SetupError("gpu" if gpu_problem and device != "cpu" else "test", text[-2000:])
 
 
 class _Meter:
@@ -117,10 +133,12 @@ def run_setup(plan: SetupPlan, settings: Settings, on_progress: Callable[[SetupP
 
     pending_gpu = [f for f in gpu_files if not _marker(f).exists()]
     total = sum(f.size for f in gpu_files + model_files)
-    gpu_left = sum(f.size for f in pending_gpu)
-    # Wheels are unpacked next to themselves, so they need roughly twice their size while extracting.
-    if shutil.disk_usage(paths.data_dir()).free < total + gpu_left:
-        raise SetupError("disk")
+    # Only what is still to arrive counts (a resumed download already has part of it on disk),
+    # plus room to unpack each pending wheel next to itself.
+    needed = sum(_left(f) for f in pending_gpu + model_files) + sum(f.size for f in pending_gpu)
+    free = shutil.disk_usage(paths.data_dir()).free
+    if free < needed:
+        raise SetupError("disk", needed=needed, free=free)
 
     meter = _Meter(total, on_progress)
     meter.report("check", 1, 1)
@@ -137,15 +155,26 @@ def run_setup(plan: SetupPlan, settings: Settings, on_progress: Callable[[SetupP
             _download(downloader, f, prog, cancel)
             meter.base += f.size
             if item == "gpu":
-                sources.extract_nvidia_libs(f.dest, gpu_dir, plan.info.os == "windows")
+                try:
+                    sources.extract_nvidia_libs(f.dest, gpu_dir, plan.info.os == "windows", cancel)
+                except DownloadCancelled as e:
+                    raise SetupError("cancelled") from e
                 _marker(f).write_text("ok")
         meter.report(item, item_total, item_total)
 
     meter.report("test", 0, 1)
-    selftest(str(model_path), settings.device)
+    selftest(str(model_path), settings.device, cancel=cancel)
     meter.report("test", 1, 1)
     return dataclasses.replace(settings, setup_done=True, whisper_model=plan.whisper_model,
                                whisper_model_path=str(model_path))
+
+
+def _left(f) -> int:
+    dest = Path(f.dest)
+    if dest.exists():
+        return 0
+    part = dest.with_name(dest.name + ".part")
+    return max(f.size - (part.stat().st_size if part.exists() else 0), 0)
 
 
 def _marker(f) -> Path:

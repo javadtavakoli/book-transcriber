@@ -22,6 +22,10 @@ if mode == "ok":
 elif mode == "error":
     emit(type="error", kind="bad_audio", message="no audio stream")
     sys.exit(1)
+elif mode == "error_then_linger":
+    emit(type="error", kind="model", message="cublas")
+    time.sleep(1.0)     # exits only after the GUI may already have started a retry
+    sys.exit(1)
 elif mode == "crash":
     print("Segmentation fault in libcudnn", file=sys.stderr, flush=True)
     sys.exit(139)

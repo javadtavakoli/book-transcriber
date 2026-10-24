@@ -36,7 +36,8 @@ def download_file(url: str, dest: Path, size: int | None, sha256: str | None,
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
     own_client = client is None
-    client = client or httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0, read=60.0))
+    # A short read timeout bounds how long a stalled connection can delay Pause or closing the app.
+    client = client or httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0, read=15.0))
     try:
         _fetch(client, url, part, on_progress, cancel)
     except httpx.HTTPError as e:
@@ -49,7 +50,7 @@ def download_file(url: str, dest: Path, size: int | None, sha256: str | None,
         if own_client:
             client.close()
 
-    if (size is not None and part.stat().st_size != size) or (sha256 and _sha256(part) != sha256.lower()):
+    if (size is not None and part.stat().st_size != size) or (sha256 and _sha256(part, cancel) != sha256.lower()):
         part.unlink()
         raise ChecksumError(f"{dest.name} arrived damaged")
     os.replace(part, dest)
@@ -75,9 +76,11 @@ def _fetch(client, url, part: Path, on_progress, cancel) -> None:
                 on_progress(have)
 
 
-def _sha256(path: Path) -> str:
+def _sha256(path: Path, cancel: threading.Event | None = None) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for block in iter(lambda: f.read(CHUNK), b""):
+            if cancel is not None and cancel.is_set():
+                raise DownloadCancelled()
             h.update(block)
     return h.hexdigest()

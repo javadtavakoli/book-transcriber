@@ -129,7 +129,10 @@ def _transcribe(a, emit, loader) -> int:
                     rate = seg.end / (now - start) if now > start else 0
                     eta = (total - seg.end) / rate if rate else 0
                     emit({"type": "progress", "done": seg.end, "total": total, "eta": eta})
-        os.replace(part, a.out)
+        if n:
+            os.replace(part, a.out)
+        else:
+            os.remove(part)     # nothing heard: don't replace an earlier transcript with an empty file
     except BaseException:
         if os.path.exists(part):
             os.remove(part)

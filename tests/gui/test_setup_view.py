@@ -167,3 +167,14 @@ def test_retranslate(qtbot, system):
     i18n.set_language("fa")
     v.retranslate()
     assert v.start_button.text() == "شروع دانلود"
+
+
+def test_disk_error_shows_real_numbers(qtbot, system):
+    from booktranscriber.setup_runner import SetupError
+    system(OK)
+    v, runner = make(qtbot)
+    v.start()
+    runner.last_error = SetupError("disk", needed=1_400_000_000, free=300_000_000)
+    runner.failed.emit("disk")
+    body = label(v, "error_body")
+    assert "1.4 GB" in body and "300 MB" in body

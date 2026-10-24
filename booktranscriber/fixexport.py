@@ -9,8 +9,11 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 TS_RE = re.compile(r"^\[(\d+:\d{2}:\d{2})\]\s?")
-_ANSWER_RE = re.compile(r"^\s*(?:\[\s*(\d+)\s*\]|(\d+)\s*[.)])\s?(.*?)\s*$")
+# A line number, optionally wrapped in markdown (**[2]**, - [3], > [4], * 5.): "[n]" or "n." / "n)".
+_ANSWER_RE = re.compile(r"^[\s>*_\-•]*(?:\[\s*([0-9۰-۹٠-٩]+)\s*\]|([0-9۰-۹٠-٩]+)\s*[.)])[*_]*\s?(.*?)\s*$")
 _DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+# Invisible direction marks chat apps add around RTL text. ZWNJ (U+200C) is part of Persian words and stays.
+_BIDI = dict.fromkeys(map(ord, "\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u061c\ufeff"))
 
 MAX_PART_CHARS = 6000
 MAX_CHANGE_RATIO = 0.5
@@ -75,12 +78,17 @@ def build_export_parts(lines: list[str], names: list[str], max_chars: int = MAX_
 
 
 def parse_answer(text: str) -> dict[int, str]:
-    out: dict[int, str] = {}
-    for line in text.translate(_DIGITS).splitlines():
+    """Numbered lines from an AI's answer. A "[n]" line beats an "n." line for the same number
+    (chat AIs often add their own numbered notes); otherwise the first occurrence wins."""
+    bracketed: dict[int, str] = {}
+    plain: dict[int, str] = {}
+    for line in text.translate(_BIDI).splitlines():
         m = _ANSWER_RE.match(line)
         if m:
-            out.setdefault(int(m.group(1) or m.group(2)), m.group(3))
-    return out
+            target = bracketed if m.group(1) else plain
+            n = int((m.group(1) or m.group(2)).translate(_DIGITS))
+            target.setdefault(n, m.group(3))
+    return {n: bracketed.get(n, plain.get(n)) for n in sorted(bracketed.keys() | plain.keys())}
 
 
 def _too_different(a: str, b: str, max_change: float) -> bool:

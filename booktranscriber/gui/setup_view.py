@@ -252,8 +252,12 @@ class SetupView(QWidget):
         if kind is None:
             return
         self.error_title.setText(tr(f"error.{kind}.title"))
-        needed = fmt_bytes(self.plan.needed_bytes if self.plan else 0, lang)
-        free = fmt_bytes(self.info.free_bytes if self.info else 0, lang)
+        err = getattr(self.runner, "last_error", None)    # the setup's own measurement, when it has one
+        if err is not None and err.kind == "disk":
+            needed, free = fmt_bytes(err.needed, lang), fmt_bytes(err.free, lang)
+        else:
+            needed = fmt_bytes(self.plan.needed_bytes if self.plan else 0, lang)
+            free = fmt_bytes(self.info.free_bytes if self.info else 0, lang)
         self.error_body.setText(tr(f"error.{kind}.body", done=fmt_bytes(self.last_done, lang), needed=needed,
                                    free=free) if kind in ("network", "disk") else tr(f"error.{kind}.body"))
         self.retry_button.setText(tr("error.check_again" if kind == "disk" else "error.try_again"))

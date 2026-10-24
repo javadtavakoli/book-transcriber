@@ -276,3 +276,18 @@ def test_main_window_export_review_save(qtbot, tmp_path):
     assert w.current_page() == "export"
     w.export_view.back.emit()
     assert w.current_page() == "flow"
+
+
+@pytest.mark.parametrize("typed,code", [("Persian", "fa"), ("persian (fa)", "fa"), ("EN", "en"), ("de", "de"),
+                                        ("گفتار", "fa")])
+def test_typed_language_resolves_to_a_code(qtbot, flow, typed, code):
+    v, runner, _ = flow
+    v.language_combo.setEditText(typed)
+    assert v.language() == code
+
+
+def test_unknown_language_text_is_not_saved(qtbot, flow):
+    v, runner, _ = flow
+    v.language_combo.setEditText("Klingon")
+    qtbot.mouseClick(v.skip_button, Qt.LeftButton)
+    assert runner.last_job.language == "fa" and v.settings.language == "fa"

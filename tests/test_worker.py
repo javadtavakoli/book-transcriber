@@ -139,3 +139,14 @@ def test_worker_env_finds_package_and_libs(monkeypatch):
     assert env["PYTHONPATH"].split(os.pathsep) == [root, "/x"]
     key = "PATH" if sys.platform == "win32" else "LD_LIBRARY_PATH"
     assert env[key].startswith("/libs/a")
+
+
+def test_no_speech_keeps_existing_transcript(tmp_path, wav_file):
+    out = tmp_path / "o.txt"
+    out.write_text("an earlier good transcript\n", "utf-8")
+    events = []
+    rc = run(["--audio", str(wav_file), "--out", str(out), "--model", "x"], events.append,
+             loader=make_loader(FakeModel([])))
+    assert rc == 0 and events[-1] == {"type": "done", "out": str(out), "segments": 0}
+    assert out.read_text("utf-8") == "an earlier good transcript\n"
+    assert not (tmp_path / "o.txt.part").exists()
