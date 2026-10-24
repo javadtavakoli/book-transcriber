@@ -5,6 +5,7 @@ name: Release
 on:
   push:
     tags: ['v*']
+    branches: ['feature/stage3-windows']   # TEMP: test builds before merge; removed before merging
   workflow_dispatch:
 
 permissions:
