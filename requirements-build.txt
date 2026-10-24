@@ -1,0 +1,2 @@
+# Building the frozen app (packaging/writing_parrot.spec).
+pyinstaller==6.22.3

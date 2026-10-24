@@ -27,3 +27,7 @@ __pycache__/
 
 # Brainstorming mockups
 .superpowers/
+
+# Local PyInstaller builds
+build/
+dist/

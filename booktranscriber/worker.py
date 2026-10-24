@@ -152,9 +152,28 @@ def run(argv: list[str], emit: Callable[[dict], None], loader=engine.load_model)
         return 1
 
 
+def ensure_stdio() -> None:
+    """A windowed frozen app starts with sys.stdout/stderr None; the parent's pipes are still fds 1 and 2."""
+    for name, fd in (("stdout", 1), ("stderr", 2)):
+        if getattr(sys, name) is not None:
+            continue
+        stream = None
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                msvcrt.get_osfhandle(fd)    # raises if the parent gave us no handle
+            else:
+                os.fstat(fd)
+            stream = os.fdopen(fd, "w", encoding="utf-8", buffering=1, closefd=False)
+        except OSError:
+            stream = open(os.devnull, "w", encoding="utf-8")
+        setattr(sys, name, stream)
+
+
 def main(argv: list[str] | None = None) -> int:
     from .gpu import register_dll_dirs_from_env
     from .protocol import encode
+    ensure_stdio()
     for s in (sys.stdout, sys.stderr):
         try:
             s.reconfigure(encoding="utf-8", errors="replace")

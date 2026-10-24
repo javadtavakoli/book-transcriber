@@ -29,6 +29,38 @@ def prepare_data() -> None:
     reap_stale()    # an AI helper left running by an earlier run that crashed would hold the graphics memory
 
 
+def smoke(out_path: str | None) -> int:
+    """`--smoke`: prove a build starts (Qt, the bundled icon, the engine's native parts) without
+    touching the network or the user's data. A windowed exe has no stdout, so the verdict goes to a file."""
+    import importlib
+    import os
+    import traceback
+    from .. import __version__
+    try:
+        for name in ("ctranslate2", "av", "faster_whisper", "onnxruntime", "httpx"):
+            importlib.import_module(name)
+        from faster_whisper.utils import get_assets_path
+        vad = os.path.join(get_assets_path(), "silero_vad_v6.onnx")
+        if not os.path.isfile(vad):
+            raise FileNotFoundError(vad)
+        app = QApplication.instance() or QApplication([sys.argv[0]])
+        apply_app_identity(app)
+        if app.windowIcon().isNull():
+            raise FileNotFoundError(paths.asset("icon.png"))
+        from .main_window import MainWindow
+        settings = load_settings(paths.settings_file())
+        MainWindow(I18n(initial_language(settings.ui_language, "en")), settings)
+        verdict, code = f"SMOKE OK {__version__}\n", 0
+    except BaseException:
+        verdict, code = "SMOKE FAIL\n" + traceback.format_exc(), 1
+    if out_path:
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(verdict)
+    elif sys.stdout is not None:     # None in a windowed exe
+        print(verdict, end="")
+    return code
+
+
 def main(argv=None) -> int:
     app = QApplication(sys.argv if argv is None else argv)
     apply_app_identity(app)

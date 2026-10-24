@@ -150,3 +150,14 @@ def test_no_speech_keeps_existing_transcript(tmp_path, wav_file):
     assert rc == 0 and events[-1] == {"type": "done", "out": str(out), "segments": 0}
     assert out.read_text("utf-8") == "an earlier good transcript\n"
     assert not (tmp_path / "o.txt.part").exists()
+
+
+def test_ensure_stdio_rebinds_none(monkeypatch):
+    from booktranscriber.worker import ensure_stdio
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    ensure_stdio()
+    assert sys.stdout is not None and sys.stderr is not None
+    sys.stdout.write("")
+    sys.stderr.write("x")
+    sys.stderr.flush()
