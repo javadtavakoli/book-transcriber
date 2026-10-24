@@ -1,0 +1,130 @@
+# Build the Windows installer. On a v* tag, also put it on a draft GitHub release.
+# Run it by hand (workflow_dispatch) to get the installer as a workflow artifact without a release.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Same as ci.yml: the multi-GB CUDA wheels are left out (the app downloads GPU support itself).
+      - name: Install Python dependencies (without CUDA wheels)
+        shell: bash
+        run: |
+          grep -v '^nvidia-' requirements.txt > requirements-ci.txt
+          sed 's/^-r requirements.txt$/-r requirements-ci.txt/' requirements-gui.txt > requirements-gui-ci.txt
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-gui-ci.txt -r requirements-build.txt pytest==9.1.1 pytest-qt==4.5.0
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python tools/check_version.py ${{ github.ref_name }}
+
+      - name: Read the version
+        id: version
+        shell: bash
+        run: echo "version=$(python -c 'from booktranscriber import __version__; print(__version__)')" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        run: python -m pytest tests -q -p no:cacheprovider
+
+      - name: Build the app (PyInstaller)
+        run: pyinstaller packaging/writing_parrot.spec --noconfirm
+
+      - name: Smoke-test the build
+        run: python packaging/smoke_test.py dist/WritingParrot
+
+      - name: Build the installer (Inno Setup)
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $defs = @("/DMyAppVersion=$env:VERSION")
+          if (-not (Test-Path (Join-Path (Split-Path $iscc) "Languages\Persian.isl"))) {
+            Write-Host "Persian.isl is not in this Inno Setup install: building without the Persian language."
+            $defs += "/DNoPersian"
+          }
+          & $iscc @defs packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Write SHA256SUMS.txt
+        shell: pwsh
+        working-directory: dist
+        run: |
+          $lines = Get-ChildItem WritingParrot-Setup-*.exe | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          }
+          [IO.File]::WriteAllText("$PWD\SHA256SUMS.txt", ($lines -join "`n") + "`n")
+          Get-Content SHA256SUMS.txt
+
+      - name: Upload the installer
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WritingParrot-windows
+          path: |
+            dist/WritingParrot-Setup-*.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: warn
+
+  release:
+    name: Draft release
+    needs: windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: WritingParrot-windows
+          path: artifact
+
+      - name: Create or update the draft release
+        shell: bash
+        run: |
+          sed "s/{{VERSION}}/${TAG#v}/g" packaging/release_notes.md > release-notes.md
+          if draft=$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" != "true" ]; then
+              echo "Release $TAG is already published; not changing its files." >&2
+              exit 1
+            fi
+            gh release upload "$TAG" artifact/* --clobber --repo "$REPO"
+          else
+            gh release create "$TAG" --draft --title "Writing Parrot $TAG" \
+              --notes-file release-notes.md artifact/* --repo "$REPO"
+          fi

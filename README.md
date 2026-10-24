@@ -17,6 +17,32 @@ language Whisper supports via `--language`.
 
 ---
 
+## Download
+
+**Windows:** download `WritingParrot-Setup-<version>.exe` from the
+[latest release](https://github.com/javadtavakoli/book-transcriber/releases/latest) and
+double-click it. Windows may warn because the app isn't signed: click **More info**, then
+**Run anyway**.
+
+![Click More info, then Run anyway](packaging/smartscreen.png)
+
+**Ubuntu and macOS:** coming soon.
+
+<div dir="rtl">
+
+**ویندوز:** فایل `WritingParrot-Setup-<version>.exe` را از
+[آخرین نسخه](https://github.com/javadtavakoli/book-transcriber/releases/latest) دانلود کنید و
+روی آن دوبار کلیک کنید. چون برنامه هنوز امضای دیجیتال ندارد، ممکن است ویندوز هشدار بدهد: اول روی
+**More info** و بعد روی **Run anyway** کلیک کنید.
+
+**اوبونتو و مک:** به‌زودی.
+
+</div>
+
+The sections below are for running from source and for the command line.
+
+---
+
 ## Desktop app (preview, Linux)
 
 A point-and-click version for people who'd rather not use a terminal, in English or
@@ -54,8 +80,8 @@ Persian (switch with the **فا / EN** button).
   transcription so the speech model has the graphics memory.
 
 The app keeps its downloads and settings in your user data folder
-(`~/.local/share/WritingParrot` on Linux), not in the project folder. Windows and
-macOS installers come in a later release.
+(`~/.local/share/WritingParrot` on Linux, `%LOCALAPPDATA%\WritingParrot` on Windows), not in
+the project folder. The Windows installer is under **Download** above; macOS comes in a later release.
 
 ---
 
