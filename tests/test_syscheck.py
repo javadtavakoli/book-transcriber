@@ -48,3 +48,8 @@ def test_find_existing_model_plain_dir_and_missing_dirs(tmp_path):
 
 def test_source_checkout_dir_is_repo():
     assert (source_checkout_dir() / "transcribe.py").is_file()
+
+
+def test_total_ram_bytes_positive():
+    from booktranscriber.syscheck import total_ram_bytes
+    assert total_ram_bytes() > 0

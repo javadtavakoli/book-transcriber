@@ -1,4 +1,6 @@
 """What this computer has: an NVIDIA GPU (and how much memory), free disk, models already present."""
+import ctypes
+import os
 import shutil
 import subprocess
 import sys
@@ -23,6 +25,7 @@ class SystemInfo:
     os: str
     gpu: GpuInfo | None
     free_bytes: int
+    ram_bytes: int = 0
 
 
 def current_os() -> str:
@@ -52,10 +55,32 @@ def _query_nvidia() -> GpuInfo | None:
     return parse_nvidia_smi(r.stdout) if r.returncode == 0 else None
 
 
+def total_ram_bytes() -> int:
+    """Installed RAM in bytes; 0 if it cannot be determined."""
+    try:
+        if sys.platform == "win32":
+            class _MemStatus(ctypes.Structure):
+                _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong),
+                            ("total_phys", ctypes.c_ulonglong), ("avail_phys", ctypes.c_ulonglong),
+                            ("total_page", ctypes.c_ulonglong), ("avail_page", ctypes.c_ulonglong),
+                            ("total_virtual", ctypes.c_ulonglong), ("avail_virtual", ctypes.c_ulonglong),
+                            ("avail_ext", ctypes.c_ulonglong)]
+            status = _MemStatus()
+            status.length = ctypes.sizeof(_MemStatus)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+            return int(status.total_phys)
+        if sys.platform == "darwin":
+            r = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=5)
+            return int(r.stdout.strip()) if r.returncode == 0 else 0
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+        return 0
+
+
 def detect_system(target_dir: Path) -> SystemInfo:
     os_name = current_os()
     gpu = None if os_name == "macos" else _query_nvidia()
-    return SystemInfo(os_name, gpu, shutil.disk_usage(target_dir).free)
+    return SystemInfo(os_name, gpu, shutil.disk_usage(target_dir).free, total_ram_bytes())
 
 
 def choose_whisper_model(info: SystemInfo) -> str:
