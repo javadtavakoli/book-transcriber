@@ -17,6 +17,34 @@ language Whisper supports via `--language`.
 
 ---
 
+## Desktop app (preview, Linux)
+
+A point-and-click version for people who'd rather not use a terminal, in English or
+Persian (switch with the **فا / EN** button).
+
+```bash
+./setup.sh        # one time
+./run-gui.sh      # open the app
+```
+
+- **First launch** checks your computer, downloads what it needs (graphics-card
+  support and the speech model) with live progress, and runs a quick test. Downloads
+  continue where they stopped if the internet drops. If you already used the
+  command line, it offers to reuse the model in `./models/`.
+- **Drop a recording** on the window, optionally list the names in it, and watch the
+  text appear.
+- **Fix mistakes with ChatGPT, Claude or Gemini**: the app splits the transcript into
+  numbered parts you copy into the AI, then you paste its answers back. You review
+  every change side by side (each one can be undone) before the corrected
+  `<name> - متن اصلاح‌شده.txt` is saved next to the raw transcript. Lines the AI
+  rewrote too much are kept as they were.
+
+The app keeps its downloads and settings in your user data folder
+(`~/.local/share/BookTranscriber` on Linux), not in the project folder. Windows and
+macOS installers come in a later release.
+
+---
+
 ## Requirements
 
 - **Linux** (tested on Ubuntu 24.04) or **Windows 10/11** (64-bit)
@@ -154,9 +182,14 @@ tail -f .transcribe_progress.txt
 ```
 transcribe.py        the transcription CLI (run with -h)
 run.sh / run.bat     launchers for Linux / Windows
+run-gui.sh / .bat    open the desktop app
 setup.sh / setup.bat one-time venv + dependency install
+booktranscriber/     engine shared by the CLI and the desktop app (gui/ = the app's screens)
 prompts/             example prompt files (one per book/session)
-requirements.txt     pinned dependencies
+requirements.txt     pinned dependencies (CLI)
+requirements-gui.txt   + desktop app
+requirements-dev.txt   + tests (run: venv/bin/python -m pytest)
+tests/               automated tests
 venv/                local Python env            (created by you, gitignored)
 models/              faster-whisper large-v3     (auto-downloaded, gitignored)
 ```

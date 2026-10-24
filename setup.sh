@@ -5,4 +5,4 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 python3 -m venv "$HERE/venv"
 "$HERE/venv/bin/python" -m pip install --upgrade pip
 "$HERE/venv/bin/python" -m pip install -r "$HERE/requirements-gui.txt"
-echo "Setup complete. Try: ./run.sh -h"
+echo "Setup complete. Open the app with ./run-gui.sh, or use the command line: ./run.sh -h"
