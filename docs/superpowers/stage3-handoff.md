@@ -113,3 +113,7 @@ The Tests workflow passed on Ubuntu, Windows and macOS (Windows is now a require
 - **Deferred minors from that fix:**
   - The `p.disconnect(self)` line in runners.py now does nothing.
   - The two new stale-signal tests are weak: they don't go through `start()` or exercise the token itself.
+
+**Draft release created.** The v0.1.1 tag's run (40142891351) passed every step: tests, the frozen-app smoke test with a real model loaded from a Persian folder, the Persian installer build, and the draft release step. The draft "Writing Parrot v0.1.1" holds `WritingParrot-Setup-0.1.1.exe` (96.7 MB) and `SHA256SUMS.txt`, with the version filled into the notes. It is still a **draft**: open GitHub → Releases to review it and press Publish.
+
+The `feature/stage3-windows` and `fix/sender-crash` branches were merged into main. Their copies on GitHub were left in place.
