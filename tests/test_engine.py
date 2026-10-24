@@ -19,8 +19,9 @@ def test_output_path_corrected_suffix(tmp_path):
 
 
 def test_corrected_path_follows_raw_location():
-    assert corrected_path_for("/docs/جلسه - متن خام.txt") == "/docs/جلسه - متن اصلاح‌شده.txt"
-    assert corrected_path_for("/docs/notes.txt") == "/docs/notes - متن اصلاح‌شده.txt"
+    raw = os.path.join("/docs", "جلسه - متن خام.txt")
+    assert corrected_path_for(raw) == os.path.join("/docs", "جلسه - متن اصلاح‌شده.txt")
+    assert corrected_path_for(os.path.join("/docs", "notes.txt")) == os.path.join("/docs", "notes - متن اصلاح‌شده.txt")
 
 
 def test_output_path_explicit_wins():

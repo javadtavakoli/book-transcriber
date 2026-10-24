@@ -2,6 +2,7 @@ import gc
 import json
 import os
 import socket
+import sys
 import threading
 
 import httpx
@@ -31,14 +32,6 @@ def model(tmp_path):
     path = tmp_path / "model.gguf"
     path.write_bytes(b"GGUF")
     return path
-
-
-def _gone(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    return False
 
 
 def test_parse_stage_monotonic():
@@ -119,12 +112,12 @@ def test_missing_binary_is_missing_kind(tmp_path, model):
     assert e.value.kind == "missing"
 
 
-def test_hang_times_out_and_kills(fake_llama, model):
+def test_hang_times_out_and_kills(fake_llama, model, llama_alive):
     srv = LlamaServer(fake_llama("hang"), model, gpu=True)
     with pytest.raises(LlmStartError) as e:
         srv.start(lambda f, eta: None, threading.Event(), timeout=1.5)
     assert e.value.kind == "timeout"
-    assert _gone(srv.pid)
+    assert not llama_alive(srv.pid)
 
 
 def _binaries(monkeypatch, mapping):
@@ -222,7 +215,7 @@ def test_missing_model_is_missing_kind(tmp_path):
     assert e.value.kind == "missing"
 
 
-def test_cancel_during_load_kills_process(fake_llama, model):
+def test_cancel_during_load_kills_process(fake_llama, model, llama_alive):
     cancel = threading.Event()
     srv = LlamaServer(fake_llama("slow"), model, gpu=True)
 
@@ -231,18 +224,18 @@ def test_cancel_during_load_kills_process(fake_llama, model):
             cancel.set()
     with pytest.raises(DownloadCancelled):
         srv.start(on_progress, cancel, timeout=20)
-    assert _gone(srv.pid)
+    assert not llama_alive(srv.pid)
     assert not srv.is_ready()
 
 
-def test_stop_is_idempotent_and_frees_port(fake_llama, model):
+def test_stop_is_idempotent_and_frees_port(fake_llama, model, llama_alive):
     srv = LlamaServer(fake_llama("ok"), model, gpu=True)
     srv.start(lambda f, eta: None, threading.Event(), timeout=20)
     port = srv.port
     srv.stop()
     srv.stop()
     assert not srv.is_ready()
-    assert _gone(srv.pid)
+    assert not llama_alive(srv.pid)
     with pytest.raises(httpx.TransportError):
         httpx.get(f"http://127.0.0.1:{port}/health")
     with socket.socket() as s:
@@ -251,14 +244,14 @@ def test_stop_is_idempotent_and_frees_port(fake_llama, model):
         s.listen()
 
 
-def test_no_orphan_after_owner_dies(fake_llama, model):
+def test_no_orphan_after_owner_dies(fake_llama, model, llama_alive):
     srv = LlamaServer(fake_llama("ok"), model, gpu=True)
     srv.start(lambda f, eta: None, threading.Event(), timeout=20)
     pid = srv.pid
     del srv
     gc.collect()
     llm_server._stop_all()
-    assert _gone(pid)
+    assert not llama_alive(pid)
 
 
 def test_chat_completions_echo_and_fix(fake_llama, model):
@@ -281,24 +274,24 @@ def test_chat_completions_echo_and_fix(fake_llama, model):
     assert answers["http500"].status_code == 500
 
 
-def test_stop_all_stops_live_servers(fake_llama, model):
+def test_stop_all_stops_live_servers(fake_llama, model, llama_alive):
     srv = LlamaServer(fake_llama("ok"), model, gpu=True)
     srv.start(lambda f, eta: None, threading.Event(), timeout=20)
     llm_server._stop_all()
-    assert not srv.is_ready() and _gone(srv.pid)
+    assert not srv.is_ready() and not llama_alive(srv.pid)
 
 
-def test_progress_callback_error_stops_process(fake_llama, model):
+def test_progress_callback_error_stops_process(fake_llama, model, llama_alive):
     srv = LlamaServer(fake_llama("slow"), model, gpu=True)
 
     def on_progress(fraction, eta):
         raise RuntimeError("window closed")
     with pytest.raises(RuntimeError):
         srv.start(on_progress, threading.Event(), timeout=20)
-    assert _gone(srv.pid)
+    assert not llama_alive(srv.pid)
 
 
-def test_stop_from_another_thread_during_load_is_a_cancel(fake_llama, model, monkeypatch):
+def test_stop_from_another_thread_during_load_is_a_cancel(fake_llama, model, monkeypatch, llama_alive):
     calls = _binaries(monkeypatch, {"vulkan": fake_llama("slow"), "cpu": fake_llama("ok")})
     settings = Settings(llm_model_path=str(model), llm_backend="vulkan")
     fallbacks, servers = [], []
@@ -313,7 +306,7 @@ def test_stop_from_another_thread_during_load_is_a_cancel(fake_llama, model, mon
         start_with_fallback(settings, lambda f, eta: None, threading.Event(),
                             lambda: fallbacks.append(1))
     assert fallbacks == [] and calls == ["vulkan"]
-    assert _gone(servers[0].pid)
+    assert not llama_alive(servers[0].pid)
 
 
 @pytest.mark.parametrize("var, proxy", [("HTTP_PROXY", "http://127.0.0.1:9"),
@@ -362,7 +355,8 @@ def test_pid_file_written_on_start_and_removed_on_stop(fake_llama, model):
     assert not _pid_file().exists()
 
 
-@pytest.mark.skipif(os.name != "posix", reason="Windows reaping comes with the Windows stage")
+@pytest.mark.skipif(sys.platform == "win32", reason="the fake runs as python.exe; image-path matching is "
+                                                    "covered in test_winjob")
 def test_reap_stale_stops_a_server_left_by_a_crash(fake_llama, model):
     srv = LlamaServer(fake_llama("ok"), model, gpu=True)
     srv.start(lambda f, eta: None, threading.Event(), timeout=20)
@@ -382,10 +376,9 @@ def test_reap_stale_stops_a_server_left_by_a_crash(fake_llama, model):
             proc.wait()
 
 
-@pytest.mark.skipif(os.name != "posix", reason="Windows reaping comes with the Windows stage")
 def test_reap_stale_leaves_an_unrelated_process_alone(tmp_path):
     import subprocess
-    other = subprocess.Popen(["sleep", "30"])
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         _pid_file().parent.mkdir(parents=True, exist_ok=True)
         _pid_file().write_text(json.dumps({"pid": other.pid, "binary": str(tmp_path / "llama-server")}), "utf-8")
@@ -399,7 +392,6 @@ def test_reap_stale_leaves_an_unrelated_process_alone(tmp_path):
 @pytest.mark.parametrize("content", ["not json", '{"pid": "x"}', "[]", None])
 def test_reap_stale_cleans_up_dead_or_garbage_files(content):
     import subprocess
-    import sys
     _pid_file().parent.mkdir(parents=True, exist_ok=True)
     if content is None:     # a process that has already exited
         dead = subprocess.Popen([sys.executable, "-c", "pass"])

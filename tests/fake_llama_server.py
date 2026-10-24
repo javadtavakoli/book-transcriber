@@ -7,6 +7,8 @@ holdchat (echo, but only after HOLD_SECONDS: a request stays in flight), diefix 
 request, then dies like a native crash on the next), oom and crash (exit during load), hang (never ready).
 If FAKE_LLAMA_LOG is set, the argument list is appended to that file as one JSON line.
 If FAKE_LLAMA_CHATS is set, a line is appended to that file as each chat request arrives.
+If FAKE_LLAMA_PIDS is set (Windows, where the server's pid is the .cmd launcher's), the fake's own pid
+is written to <that dir>/<parent pid>, so tests can check the process that really serves is gone.
 """
 import argparse
 import json
@@ -116,7 +118,19 @@ def make_handler(mode: str):
     return Handler
 
 
+def record_pid() -> None:
+    folder = os.environ.get("FAKE_LLAMA_PIDS")
+    if not folder:
+        return
+    os.makedirs(folder, exist_ok=True)
+    tmp = os.path.join(folder, f"{os.getppid()}.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(str(os.getpid()))
+    os.replace(tmp, os.path.join(folder, str(os.getppid())))
+
+
 def main() -> None:
+    record_pid()    # first, so even a fake stopped during loading has left it
     p = argparse.ArgumentParser()
     p.add_argument("mode")
     p.add_argument("-m", "--model", default="")

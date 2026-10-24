@@ -22,9 +22,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-2022, macos-14]
-    # Windows and macOS are report-only until their own stages (known gaps: the fake
-    # llama-server launcher and process checks are POSIX-only for now).
-    continue-on-error: ${{ matrix.os != 'ubuntu-24.04' }}
+    # macOS is report-only until its own stage; Linux and Windows must pass.
+    continue-on-error: ${{ matrix.os == 'macos-14' }}
     env:
       QT_QPA_PLATFORM: offscreen
       PYTHONUTF8: "1"

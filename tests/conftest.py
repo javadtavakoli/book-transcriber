@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 FAKE_LLAMA = Path(__file__).with_name("fake_llama_server.py")
+WINDOWS = sys.platform == "win32"
 
 
 @pytest.fixture(autouse=True)
@@ -26,13 +27,18 @@ def wav_file(tmp_path):
 
 
 @pytest.fixture
-def fake_llama(tmp_path):
+def fake_llama(tmp_path, monkeypatch):
     """Factory: fake_llama(mode) -> an executable that behaves like llama-server in that mode.
 
     Every server still running at teardown is stopped, so no fake outlives its test.
     """
+    if WINDOWS:
+        monkeypatch.setenv("FAKE_LLAMA_PIDS", str(tmp_path / "fake-llama-pids"))
+
     def make(mode: str) -> Path:
-        if sys.platform == "win32":
+        if WINDOWS:
+            # Windows runs only real executables, so a .cmd starts Python: the server's pid is cmd.exe's,
+            # and the fake is its child (it records its pid; see llama_alive).
             launcher = tmp_path / f"llama-server-{mode}.cmd"
             launcher.write_text(f'@"{sys.executable}" "{FAKE_LLAMA}" {mode} %*\r\n')
         else:
@@ -48,3 +54,30 @@ def fake_llama(tmp_path):
     yield make
     from booktranscriber import llm_server
     llm_server._stop_all()
+
+
+def _pid_alive(pid: int) -> bool:
+    if WINDOWS:     # os.kill(pid, 0) there sends a Ctrl+C rather than checking
+        from booktranscriber import winjob
+        return winjob.alive(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+@pytest.fixture
+def llama_alive(tmp_path):
+    """llama_alive(pid) -> whether the fake llama-server started as `pid` is still running.
+
+    On Windows `pid` is the .cmd launcher; the Python fake under it counts too, as it is what holds
+    the port. With no pid recorded the fake never started.
+    """
+    def alive(pid: int) -> bool:
+        pids = [pid]
+        recorded = tmp_path / "fake-llama-pids" / str(pid)
+        if WINDOWS and recorded.exists():
+            pids.append(int(recorded.read_text()))
+        return any(_pid_alive(p) for p in pids)
+    return alive

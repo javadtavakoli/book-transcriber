@@ -1,5 +1,4 @@
 import dataclasses
-import os
 from pathlib import Path
 
 import pytest
@@ -87,14 +86,6 @@ def open_recent(w, raw_file):
     add_recent(paths.recents_file(), item)
     w.home_view.recent_opened.emit(item)
     return item
-
-
-def alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
 
 
 # --- setup --------------------------------------------------------------------------
@@ -333,7 +324,7 @@ def test_memory_error_export_instead_opens_export(qtbot, window, binaries, raw_f
     assert w.current_page() == "export" and w.export_view.lines == LINES
 
 
-def test_server_stopped_before_new_transcription(qtbot, window, binaries, raw_file, monkeypatch):
+def test_server_stopped_before_new_transcription(qtbot, window, binaries, raw_file, monkeypatch, llama_alive):
     binaries({"vulkan": "ok"})
     w = window
     open_recent(w, raw_file)
@@ -342,7 +333,8 @@ def test_server_stopped_before_new_transcription(qtbot, window, binaries, raw_fi
     assert w.local_runner.server_loaded()
     pid = w.local_runner._server.pid
     seen = []
-    monkeypatch.setattr(w.transcriber, "start", lambda job: seen.append((alive(pid), w.local_runner.server_loaded())))
+    monkeypatch.setattr(w.transcriber, "start",
+                        lambda job: seen.append((llama_alive(pid), w.local_runner.server_loaded())))
     audio = raw_file.with_name("next.m4a")
     audio.write_bytes(b"x")
     w.home_view.handle_files([str(audio)])
@@ -368,12 +360,12 @@ def fix_threads_running(r) -> bool:
 
 
 def test_new_transcription_while_answering_stops_helper_first(qtbot, window, raw_file, chat_in_flight,
-                                                              monkeypatch):
+                                                              monkeypatch, llama_alive):
     import time
     w, pid = window, chat_in_flight
     seen = []
     monkeypatch.setattr(w.transcriber, "start",
-                        lambda job: seen.append((alive(pid), fix_threads_running(w.local_runner))))
+                        lambda job: seen.append((llama_alive(pid), fix_threads_running(w.local_runner))))
     audio = raw_file.with_name("next.m4a")
     audio.write_bytes(b"x")
     t0 = time.monotonic()
@@ -383,7 +375,7 @@ def test_new_transcription_while_answering_stops_helper_first(qtbot, window, raw
     assert not w.local_runner.server_loaded() and not list(llm_server._servers)
 
 
-def test_close_while_answering_stops_everything(qtbot, window, chat_in_flight, monkeypatch):
+def test_close_while_answering_stops_everything(qtbot, window, chat_in_flight, monkeypatch, llama_alive):
     import time
     w, pid = window, chat_in_flight
     w.show()
@@ -391,7 +383,7 @@ def test_close_while_answering_stops_everything(qtbot, window, chat_in_flight, m
     t0 = time.monotonic()
     w.close()
     assert time.monotonic() - t0 < 10
-    assert not alive(pid) and not fix_threads_running(w.local_runner)
+    assert not llama_alive(pid) and not fix_threads_running(w.local_runner)
     assert not w.local_runner.server_loaded() and not list(llm_server._servers)
 
 
@@ -408,7 +400,7 @@ def test_retry_after_failure_also_stops_server(qtbot, settings):
     assert calls == ["stop", "stop"] and len(v.runner.jobs) == 2
 
 
-def test_close_stops_server(qtbot, window, binaries, raw_file):
+def test_close_stops_server(qtbot, window, binaries, raw_file, llama_alive):
     binaries({"vulkan": "ok"})
     w = window
     w.show()
@@ -416,9 +408,9 @@ def test_close_stops_server(qtbot, window, binaries, raw_file):
     w.flow_view.local_button.click()
     qtbot.waitUntil(lambda: w.current_page() == "review", timeout=20000)
     pid = w.local_runner._server.pid
-    assert alive(pid) and not w.busy()
+    assert llama_alive(pid) and not w.busy()
     w.close()
-    assert not alive(pid) and not w.local_runner.server_loaded()
+    assert not llama_alive(pid) and not w.local_runner.server_loaded()
 
 
 def test_close_while_loading_stops_everything(qtbot, window, binaries, raw_file, monkeypatch):

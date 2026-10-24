@@ -15,7 +15,7 @@ from typing import Callable
 
 import httpx
 
-from . import paths
+from . import paths, winjob
 from .downloader import DownloadCancelled
 from .llm_sources import server_binary
 from .settings import Settings, write_json_atomic
@@ -104,7 +104,10 @@ def _read_log(stream, log: _Log) -> None:
         stream.close()
 
 
-def _stop_process(proc: subprocess.Popen, reader: threading.Thread | None) -> None:
+def _stop_process(proc: subprocess.Popen, reader: threading.Thread | None, job: int | None = None) -> None:
+    if job is not None:
+        # The whole tree, even if the direct child has exited: a launcher's child would keep the port.
+        winjob.terminate_tree(job)
     if proc.poll() is None:
         proc.terminate()
         try:
@@ -112,6 +115,8 @@ def _stop_process(proc: subprocess.Popen, reader: threading.Thread | None) -> No
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+    if job is not None:
+        winjob.close(job)
     if reader is not None:
         reader.join(5)
     _remove_pid_file(proc.pid)
@@ -157,6 +162,9 @@ def _command_line(pid: int) -> list[str] | None:
         except (OSError, subprocess.SubprocessError):
             return None
         return [r.stdout.strip()] if r.returncode == 0 and r.stdout.strip() else None
+    if sys.platform == "win32":    # only the executable's path; enough to tell llama-server.exe apart
+        image = winjob.image_path(pid)
+        return [image] if image else None
     return None
 
 
@@ -165,6 +173,8 @@ def _is_server(pid: int, binary: str) -> bool:
     args = _command_line(pid)
     if not args:
         return False
+    if sys.platform == "win32":
+        return os.path.normcase(os.path.realpath(args[0])) == os.path.normcase(os.path.realpath(binary))
     if sys.platform == "darwin":    # one string; the binary leads it, or follows an interpreter
         return args[0].startswith(binary) or args[0].split(" ", 1)[-1].startswith(binary)
     real = os.path.realpath(binary)
@@ -173,6 +183,8 @@ def _is_server(pid: int, binary: str) -> bool:
 
 
 def _alive(pid: int) -> bool:
+    if sys.platform == "win32":    # os.kill(pid, 0) there would send the process a Ctrl+C
+        return winjob.alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -186,6 +198,9 @@ def _alive(pid: int) -> bool:
 
 
 def _kill(pid: int) -> None:
+    if sys.platform == "win32":    # no signals: TerminateProcess
+        winjob.kill(pid)
+        return
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -199,7 +214,8 @@ def reap_stale() -> bool:
     """Stop a llama-server left running by an earlier run of the app. True if one was stopped.
 
     Kills only a live process whose command line is still the recorded binary (a pid can be
-    reused). Never raises. Not on Windows yet.
+    reused). Never raises. On Windows it rarely has anything to do: the server is in a job that
+    Windows ends with the app, crash or not.
     """
     f = _pid_file()
     if not f.exists():
@@ -215,7 +231,7 @@ def reap_stale() -> bool:
     if any(s.pid == pid for s in list(_servers)):
         return False    # this app's own running server, not a stale one
     try:
-        if os.name != "posix" or pid <= 0 or not _alive(pid) or not _is_server(pid, binary):
+        if pid <= 0 or not _alive(pid) or not _is_server(pid, binary):
             return False
         _kill(pid)
         return True
@@ -223,6 +239,15 @@ def reap_stale() -> bool:
         return False
     finally:
         _remove_pid_file()
+
+
+def _job_for(pid: int) -> int | None:
+    """A kill-on-close job holding the process: if the app dies, even by a crash, Windows ends it."""
+    job = winjob.create_kill_on_close_job()
+    if job is not None and not winjob.assign(job, pid):
+        winjob.close(job)
+        return None
+    return job
 
 
 # Every started server, so the app never exits leaving one running.
@@ -247,6 +272,7 @@ class LlamaServer:
         self._reader: threading.Thread | None = None
         self._ready = False
         self._finalizer: weakref.finalize | None = None
+        self._job: int | None = None     # Windows: the kill-on-close job the process runs in
         self._lock = threading.Lock()
 
     def command(self) -> list[str]:
@@ -270,13 +296,14 @@ class LlamaServer:
                                     stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace", **kw)
         except OSError as e:   # a build that can't even be executed is as broken as one that crashes
             raise LlmStartError("crash", str(e)) from e
+        job = _job_for(proc.pid) if windows else None
         _write_pid_file(proc.pid, self.binary)
         reader = threading.Thread(target=_read_log, args=(proc.stdout, log), daemon=True)
         reader.start()
         with self._lock:
-            self._proc, self._reader, self.pid = proc, reader, proc.pid
+            self._proc, self._reader, self.pid, self._job = proc, reader, proc.pid, job
             # A server collected without stop() still takes its process down with it.
-            self._finalizer = weakref.finalize(self, _stop_process, proc, reader)
+            self._finalizer = weakref.finalize(self, _stop_process, proc, reader, job)
         _servers.add(self)
         try:
             self._wait_ready(proc, reader, log, on_progress, cancel, timeout, LoadEstimator(previous_seconds))
@@ -333,12 +360,13 @@ class LlamaServer:
     def stop(self) -> None:
         with self._lock:
             proc, reader, self._proc, self._reader = self._proc, self._reader, None, None
+            job, self._job = self._job, None
             finalizer, self._finalizer = self._finalizer, None
             self._ready = False
         if finalizer is not None:
             finalizer.detach()
         if proc is not None:
-            _stop_process(proc, reader)
+            _stop_process(proc, reader, job)    # also closes the job's handle
         _servers.discard(self)
 
 
