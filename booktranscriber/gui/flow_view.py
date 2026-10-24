@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, Q
                                QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QStackedLayout,
                                QToolButton, QVBoxLayout, QWidget)
 
-from .. import paths
+from .. import downloads, paths
 from ..engine import output_path
 from ..i18n import fmt_bytes, fmt_duration
 from ..llm_catalog import MODELS, choose_backend, choose_llm
@@ -435,7 +435,10 @@ class FlowView(QWidget):
     def _llm_choice(self) -> tuple[str, str]:
         """(model key, backend) for this computer; checked once, since it asks the graphics card."""
         if self._llm_pick is None:
-            info = detect_system(paths.downloads_dir())     # the helper downloads there
+            try:    # the helper downloads there; measured without creating the folder
+                info = detect_system(downloads.nearest_existing(paths.downloads_dir_path()))
+            except OSError:     # its drive isn't connected
+                info = detect_system(paths.data_dir())
             model, self._llm_recommended = choose_llm(info)
             self._llm_pick = (model, choose_backend(info))
         return self._llm_pick

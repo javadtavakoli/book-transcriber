@@ -141,14 +141,25 @@ class DownloadsDialog(QDialog):
             return
         target = downloads.choose_target(picked)
         try:
+            # Checked before writable(), which creates the folder.
             if target.resolve() == current.resolve():
+                self._status(tr("downloads.same"))
+                return
+            if downloads._nested(current.resolve(), target.resolve()):
+                self._status(tr("downloads.failed_nested"), error=True)
                 return
         except OSError:
             pass
+        created = not target.exists()
         if not downloads.writable(target):
             self._status(tr("downloads.failed_target"), error=True)
             return
         answer = ask_move(self, self.i18n, downloads.downloads_size(current))
+        if answer == "cancel" and created:
+            try:
+                target.rmdir()      # only the folder made just now, and only while it is empty
+            except OSError:
+                pass
         if answer == "dont":
             try:
                 downloads.set_downloads_dir(self.settings, target)

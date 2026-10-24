@@ -1,5 +1,4 @@
 """First-run setup: welcome → downloading → ready, with friendly errors (spec §4.1)."""
-import dataclasses
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
@@ -21,24 +20,18 @@ STATES = ("welcome", "downloading", "ready", "error")
 ERROR_STYLE = "color: #c0392b;"
 
 
-def _nearest_existing(path: Path) -> Path:
-    """The folder itself, or its closest parent that exists (free space is measured there)."""
-    path = Path(path)
-    while not path.exists() and path.parent != path:
-        path = path.parent
-    return path
-
-
 def _detect_at(folder: Path):
-    """The computer, with the free space where folder is; the app folder's when that drive is gone."""
+    """(the computer with the free space where folder is, False), or with the app folder's and True
+    when folder's drive isn't connected."""
     try:
-        return detect_system(_nearest_existing(folder))
+        return detect_system(downloads.nearest_existing(folder)), False
     except OSError:     # an unplugged drive: not even its root exists
-        return detect_system(paths.data_dir())
+        return detect_system(paths.data_dir()), True
 
 
 class SetupView(QWidget):
     completed = Signal(object)
+    move_requested = Signal()   # Change… when the downloads are already there: move them, don't orphan them
 
     def __init__(self, i18n, settings: Settings, runner, parent=None):
         super().__init__(parent)
@@ -50,6 +43,8 @@ class SetupView(QWidget):
         self.paused = False
         self.downloads_target: Path = paths.data_dir_path()
         self.location_reason: str | None = None     # "c_full": the suggestion moved off the full drive
+        self.target_missing = False                 # downloads_target's drive isn't connected
+        self.location_error: str | None = None      # an i18n key for the red line under the location
 
         self.stack = QStackedLayout(self)
         self.pages = {}
@@ -200,10 +195,10 @@ class SetupView(QWidget):
 
     def refresh(self) -> None:
         """Check the computer again and show the welcome screen."""
-        self.location_problem.hide()
+        self.location_error, self.target_missing = None, False
         if self.settings.downloads_dir:     # a repair run: stay where the downloads already are
             self.downloads_target, self.location_reason = Path(self.settings.downloads_dir), None
-            self.info = _detect_at(self.downloads_target)
+            self.info, self.target_missing = _detect_at(self.downloads_target)
         else:
             self.info = detect_system(paths.data_dir())
         root = source_checkout_dir()
@@ -218,7 +213,7 @@ class SetupView(QWidget):
             needed = make_plan(self.info, reuse, include_llm=recommended).needed_bytes
             self.downloads_target, self.location_reason = downloads.suggest_default(needed)
             if self.location_reason is not None:     # another drive: its free space is what counts
-                self.info = _detect_at(self.downloads_target)
+                self.info, self.target_missing = _detect_at(self.downloads_target)
         fits = self.info.free_bytes >= make_plan(self.info, reuse, include_llm=True).needed_bytes
         self.llm_box.blockSignals(True)
         self.llm_box.setChecked(recommended and fits)
@@ -249,32 +244,43 @@ class SetupView(QWidget):
         self.space_line.setText("💾 " + tr(key, needed=fmt_bytes(plan.needed_bytes, lang),
                                            free=fmt_bytes(self.info.free_bytes, lang)))
         self.space_line.setStyleSheet("" if enough else ERROR_STYLE)
-        self.location_line.setText("📁 " + tr("setup.location", path=str(self.downloads_target),
-                                             free=fmt_bytes(self.info.free_bytes, lang)))
+        self.space_line.setVisible(not self.target_missing)     # it would be the app folder's drive
+        if self.target_missing:
+            self.location_line.setText("📁 " + str(self.downloads_target))
+        else:
+            self.location_line.setText("📁 " + tr("setup.location", path=str(self.downloads_target),
+                                                 free=fmt_bytes(self.info.free_bytes, lang)))
         self.location_note.setVisible(self.location_reason == "c_full")
-        self.start_button.setEnabled(enough)
+        error = self.location_error or ("setup.location.missing" if self.target_missing else None)
+        self.location_problem.setText(tr(error) if error else "")
+        self.location_problem.setVisible(error is not None)
+        self.start_button.setEnabled(enough and not self.target_missing)
         self.reuse_box.setText(tr("setup.reuse_existing", size=fmt_bytes(MODEL_ESTIMATE[plan.whisper_model], lang)))
         llm_size = MODELS[plan.llm_model].size + LLM_RUNTIME_ESTIMATE
         self.llm_note.setText(tr("setup.llm_note", size=fmt_bytes(llm_size, lang)))
 
     def _change_location(self) -> None:
+        if self.settings.setup_done and downloads.downloads_size(paths.downloads_dir_path()) > 0:
+            self.move_requested.emit()      # Settings' move: setup would download it all again
+            return
         picked = downloads_dialog.pick_folder(self, self.downloads_target)
         if picked is None:
             return
         target = downloads.choose_target(picked)
         if not downloads.writable(target):
-            self.location_problem.show()
-            return
-        self.location_problem.hide()
-        self.downloads_target, self.location_reason = target, None
-        self.info = _detect_at(target)
+            self.location_error = "setup.location.unwritable"
+        else:
+            self.location_error = None
+            self.downloads_target, self.location_reason = target, None
+            self.info, self.target_missing = _detect_at(target)
         self._update_welcome()
 
     def start(self) -> None:
         try:
             downloads.set_downloads_dir(self.settings, self.downloads_target)    # before anything downloads
         except OSError:     # the drive went away since it was picked
-            self.location_problem.show()
+            self.location_error = "setup.location.unwritable"
+            self._update_welcome()
             self._show("welcome")
             return
         self.plan = self._current_plan()
@@ -305,7 +311,8 @@ class SetupView(QWidget):
         self.start()
 
     def _continue_on_cpu(self) -> None:
-        self.settings = dataclasses.replace(self.settings, device="cpu")
+        # The shared object, not a copy: a copy would keep paths that a later move changes.
+        self.settings.device = "cpu"
         self.start()
 
     # --- runner events --------------------------------------------------------
@@ -384,7 +391,6 @@ class SetupView(QWidget):
         self.llm_weak.setText(tr("setup.llm_weak"))
         self.change_button.setText(tr("setup.location.change"))
         self.location_note.setText(tr("setup.location.c_full"))
-        self.location_problem.setText(tr("setup.location.unwritable"))
         self.dl_title.setText(tr("setup.downloading.title"))
         self.resume_note.setText(tr("setup.resume_note"))
         self.overall_label.setText(tr("setup.overall"))

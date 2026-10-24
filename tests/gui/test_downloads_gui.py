@@ -10,7 +10,7 @@ from booktranscriber.gui.downloads_dialog import DownloadsDialog
 from booktranscriber.gui.main_window import MainWindow
 from booktranscriber.gui.setup_view import SetupView
 from booktranscriber.i18n import I18n
-from booktranscriber.settings import Settings, load_settings
+from booktranscriber.settings import Settings, load_settings, save_settings
 from booktranscriber.syscheck import GpuInfo, SystemInfo
 
 from .test_setup_view import FakeRunner
@@ -222,6 +222,15 @@ def ready_settings(tmp_path, **kw) -> Settings:
     return Settings(setup_done=True, whisper_model_path=str(model), **kw)
 
 
+def driving(qtbot, opened):
+    """A run_dialog that presses Change… and waits for the move, as a person would before closing."""
+    def run(dlg):
+        opened.append(dlg)
+        qtbot.mouseClick(dlg.change_button, Qt.LeftButton)
+        qtbot.waitUntil(lambda: not dlg.is_moving(), timeout=5000)
+    return run
+
+
 def test_move_through_menu_keeps_one_settings_object(qtbot, monkeypatch, tmp_path):
     fake_downloads(paths.data_dir())
     new = tmp_path / "new"
@@ -231,7 +240,7 @@ def test_move_through_menu_keeps_one_settings_object(qtbot, monkeypatch, tmp_pat
     monkeypatch.setattr(w.local_runner, "stop_server", lambda: stops.append(1))
     monkeypatch.setattr(main_window, "reap_stale", lambda: None)
     opened = []
-    monkeypatch.setattr(downloads_dialog, "run_dialog", opened.append)
+    monkeypatch.setattr(downloads_dialog, "run_dialog", driving(qtbot, opened))
     monkeypatch.setattr(downloads_dialog, "pick_folder", lambda parent, start: new)
 
     def ask(parent, i18n, size):
@@ -241,12 +250,50 @@ def test_move_through_menu_keeps_one_settings_object(qtbot, monkeypatch, tmp_pat
     w.downloads_action.trigger()
     [dlg] = opened
     assert dlg.settings is w.settings
-    qtbot.mouseClick(dlg.change_button, Qt.LeftButton)
-    qtbot.waitUntil(lambda: not dlg.is_moving(), timeout=5000)
     assert stops == [1]
     assert w.settings is w.flow_view.settings is w.setup_view.settings
     assert w.settings.downloads_dir == str(new) == w.flow_view.settings.downloads_dir
     assert (new / "llm" / "helper.gguf").exists()
+
+
+def test_setup_after_a_menu_move_starts_in_the_new_folder(qtbot, monkeypatch, tmp_path):
+    data = paths.data_dir()
+    fake_downloads(data)
+    new = tmp_path / "new"
+    w = MainWindow(I18n("en"), Settings(setup_done=True, whisper_model_path=str(data / "models" / "m")))
+    qtbot.addWidget(w)
+    starts = []
+    monkeypatch.setattr(w.setup_runner, "start", lambda plan, settings: starts.append(settings))
+    w.open_repair()
+    w.setup_view._on_failed("gpu")
+    w.setup_view._continue_on_cpu()         # the error page's "Continue without graphics card"
+    w.setup_view._on_failed("network")
+    assert w.current_page() == "setup" and w.setup_view.state() == "error"
+    monkeypatch.setattr(downloads_dialog, "run_dialog", driving(qtbot, []))
+    monkeypatch.setattr(downloads_dialog, "pick_folder", lambda parent, start: new)
+    monkeypatch.setattr(downloads_dialog, "ask_move", lambda parent, i18n, size: "move")
+    w.downloads_action.trigger()
+    assert w.setup_view.state() == "welcome" and w.setup_view.downloads_target == new
+    w.setup_view.start()
+    s = starts[-1]
+    assert s is w.settings and s.device == "cpu"
+    assert s.downloads_dir == str(new) and s.whisper_model_path == str(new / "models" / "m")
+    saved = load_settings(paths.settings_file())
+    assert saved.downloads_dir == str(new) and saved.whisper_model_path == str(new / "models" / "m")
+
+
+def test_change_on_repair_run_with_downloads_offers_the_move(qtbot, monkeypatch, tmp_path):
+    data = paths.data_dir()
+    fake_downloads(data)
+    w = MainWindow(I18n("en"), Settings(setup_done=True, whisper_model_path=str(data / "models" / "m")))
+    qtbot.addWidget(w)
+    w.open_repair()
+    opened = []
+    monkeypatch.setattr(downloads_dialog, "run_dialog", opened.append)
+    monkeypatch.setattr(downloads_dialog, "pick_folder", lambda parent, start: pytest.fail("setup picked"))
+    qtbot.mouseClick(w.setup_view.change_button, Qt.LeftButton)
+    assert len(opened) == 1 and opened[0].settings is w.settings
+    assert w.setup_view.downloads_target == data
 
 
 def test_move_blocked_while_busy(qtbot, monkeypatch, tmp_path):
@@ -288,21 +335,6 @@ def test_missing_downloads_folder_prompts(qtbot, monkeypatch, tmp_path):
     assert w.current_page() == "setup"
 
 
-def test_missing_downloads_folder_retry_finds_it(qtbot, monkeypatch, tmp_path):
-    back = tmp_path / "usb" / "WritingParrot"
-    w = MainWindow(I18n("en"), ready_settings(tmp_path, downloads_dir=str(back)))
-    qtbot.addWidget(w)
-    asked = []
-
-    def ask(parent, i18n, path):
-        asked.append(path)
-        back.mkdir(parents=True)     # the drive was plugged back in
-        return "retry"
-    monkeypatch.setattr(downloads_dialog, "ask_missing", ask)
-    w.check_downloads_folder()
-    assert asked == [back] and w.settings.downloads_dir == str(back) and w.current_page() == "home"
-
-
 def test_present_downloads_folder_asks_nothing(qtbot, monkeypatch, tmp_path):
     w = MainWindow(I18n("en"), ready_settings(tmp_path, downloads_dir=str(tmp_path)))
     qtbot.addWidget(w)
@@ -315,20 +347,101 @@ def test_missing_prompt_strings_in_english():
     assert tr("downloads.retry") == "Try again" and tr("downloads.choose") == "Choose another folder"
 
 
-def test_unplugged_drive_does_not_break_start(qtbot, monkeypatch, tmp_path):
-    """On Windows E:\\ itself is gone when the drive is unplugged: measuring there raises."""
-    gone = tmp_path / "usb" / "WritingParrot"
+def unplugged(monkeypatch, gone: Path):
+    """Simulate a Windows drive that isn't connected: measuring anywhere on it (even E:\\) fails."""
     data = paths.data_dir_path()
 
     def detect(d):
-        if Path(d) != data:
+        if Path(d) != data and Path(d) != gone:
             raise OSError("no such drive")
         return OK
     monkeypatch.setattr(setup_view, "detect_system", detect)
-    w = MainWindow(I18n("en"), ready_settings(tmp_path, downloads_dir=str(gone)))
+
+
+def saved_window(qtbot, gone: Path) -> MainWindow:
+    """Settings on disk too, so paths.downloads_dir_path() really is the missing folder."""
+    s = Settings(setup_done=True, whisper_model_path=str(gone / "models" / "m"), downloads_dir=str(gone))
+    save_settings(s, paths.settings_file())
+    assert paths.downloads_dir_path() == gone
+    w = MainWindow(I18n("en"), s)
     qtbot.addWidget(w)
-    assert w.setup_view.downloads_target == gone
+    return w
+
+
+def test_unplugged_drive_does_not_break_start(qtbot, monkeypatch, tmp_path):
+    gone = tmp_path / "usb" / "WritingParrot"
+    unplugged(monkeypatch, gone)
+    w = saved_window(qtbot, gone)
+    assert w.current_page() == "setup"      # the model is on that drive
+    v = w.setup_view
+    assert v.downloads_target == gone and not v.start_button.isEnabled()
+    problem = label(v, "location_problem")
+    assert problem.isVisibleTo(v) and "isn't connected" in problem.text()
+    assert "free" not in label(v, "location_line").text()       # no other drive's free space shown as its
     asked = []
     monkeypatch.setattr(downloads_dialog, "ask_missing", lambda parent, i18n, path: asked.append(path) or "close")
     w.check_downloads_folder()
-    assert asked == [gone]
+    assert asked == [gone] and w.current_page() == "setup"
+
+
+def test_missing_downloads_folder_retry_finds_it(qtbot, monkeypatch, tmp_path):
+    gone = tmp_path / "usb" / "WritingParrot"
+    unplugged(monkeypatch, gone)
+    w = saved_window(qtbot, gone)
+    asked = []
+
+    def ask(parent, i18n, path):
+        asked.append(path)
+        fake_downloads(gone)        # the drive was plugged back in
+        return "retry"
+    monkeypatch.setattr(downloads_dialog, "ask_missing", ask)
+    w.check_downloads_folder()
+    assert asked == [gone] and w.settings.downloads_dir == str(gone)
+    assert w.current_page() == "home"
+    v = w.setup_view
+    assert not v.target_missing and not label(v, "location_problem").isVisibleTo(v)
+
+
+def test_dialog_same_folder_says_so(qtbot, monkeypatch):
+    dlg = DownloadsDialog(I18n("en"), Settings(setup_done=True))
+    qtbot.addWidget(dlg)
+    monkeypatch.setattr(downloads_dialog, "pick_folder", lambda parent, start: paths.data_dir())
+    monkeypatch.setattr(downloads_dialog, "ask_move", lambda *a: pytest.fail("asked"))
+    qtbot.mouseClick(dlg.change_button, Qt.LeftButton)
+    assert "already" in dlg.status_label.text()
+
+
+def test_dialog_nested_checked_before_creating(qtbot, monkeypatch):
+    inside = paths.data_dir() / "models" / "elsewhere"
+    dlg = DownloadsDialog(I18n("en"), Settings(setup_done=True))
+    qtbot.addWidget(dlg)
+    monkeypatch.setattr(downloads_dialog, "pick_folder", lambda parent, start: inside)
+    monkeypatch.setattr(downloads, "writable", lambda f: pytest.fail("writable() called"))
+    qtbot.mouseClick(dlg.change_button, Qt.LeftButton)
+    assert "inside" in dlg.status_label.text() and not inside.exists()
+
+
+def test_dialog_cancel_removes_the_folder_it_made(qtbot, monkeypatch, tmp_path):
+    fake_downloads(paths.data_dir())
+    made, kept = tmp_path / "made", tmp_path / "kept"
+    kept.mkdir()
+    dlg = DownloadsDialog(I18n("en"), Settings(setup_done=True))
+    qtbot.addWidget(dlg)
+    monkeypatch.setattr(downloads_dialog, "ask_move", lambda parent, i18n, size: "cancel")
+    for folder in (made, kept):
+        monkeypatch.setattr(downloads_dialog, "pick_folder", lambda parent, start, f=folder: f)
+        qtbot.mouseClick(dlg.change_button, Qt.LeftButton)
+    assert not made.exists() and kept.is_dir()
+
+
+def test_flow_measures_downloads_without_creating_it(qtbot, monkeypatch, tmp_path):
+    from booktranscriber.gui import flow_view
+    later = tmp_path / "later" / "WritingParrot"
+    save_settings(Settings(downloads_dir=str(later)), paths.settings_file())
+    seen = []
+    monkeypatch.setattr(flow_view, "detect_system", lambda d: seen.append(Path(d)) or OK)
+    w = MainWindow(I18n("en"), ready_settings(tmp_path, downloads_dir=str(later)))
+    qtbot.addWidget(w)
+    w.flow_view._llm_pick = None
+    w.flow_view._llm_choice()
+    assert seen[-1] == tmp_path and not later.exists()

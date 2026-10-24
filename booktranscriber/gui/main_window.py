@@ -68,6 +68,7 @@ class MainWindow(QMainWindow):
             self.set_page_widget(name, QWidget())
         self.setup_view = SetupView(i18n, settings, self.setup_runner)
         self.setup_view.completed.connect(self._on_setup_completed)
+        self.setup_view.move_requested.connect(self.open_downloads)
         self.set_page_widget("setup", self.setup_view)
         self.home_view = HomeView(i18n, settings)
         self.flow_view = FlowView(i18n, settings, self.transcriber, before_transcribe=self._free_graphics_card)
@@ -132,17 +133,24 @@ class MainWindow(QMainWindow):
         dlg = DownloadsDialog(self.i18n, self.settings, self, before_move=self._free_graphics_card)
         dlg.repair_needed.connect(self.open_repair)
         downloads_dialog.run_dialog(dlg)
+        dlg.deleteLater()
+        if self.current_page() == "setup" and not self.busy():
+            # Its folder (and on an error page, its plan) may be the old one: start again from the new.
+            self.setup_view.settings = self.settings
+            self.setup_view.refresh()
 
     def check_downloads_folder(self) -> None:
         """At start: a downloads folder on a drive that isn't plugged in. Try again, or pick another."""
         if not (self.settings.setup_done and self.settings.downloads_dir):
+            return
+        if Path(self.settings.downloads_dir).is_dir():
             return
         while not Path(self.settings.downloads_dir).is_dir():
             answer = downloads_dialog.ask_missing(self, self.i18n, Path(self.settings.downloads_dir))
             if answer == "retry":
                 continue
             if answer != "choose":
-                return
+                return      # setup shows the drive as not connected
             picked = downloads_dialog.pick_folder(self, Path.home())
             if picked is None:
                 continue
@@ -156,6 +164,9 @@ class MainWindow(QMainWindow):
                 continue
             self.open_repair()      # the new folder is empty: setup downloads what is missing
             return
+        # Found again (plugged back in): the page and setup's measurements were made without it.
+        self.setup_view.refresh()
+        self.show_page("home" if model_ready(self.settings) else "setup")
 
     def _on_setup_completed(self, new: Settings) -> None:
         for f, v in vars(new).items():

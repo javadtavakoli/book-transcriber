@@ -82,12 +82,17 @@ def downloads_size(root: Path) -> int:
     return sum(p.stat().st_size for p in _files(root))
 
 
-def _free(path: Path) -> int:
-    """Free bytes on the drive holding path, which need not exist yet."""
+def nearest_existing(path: Path) -> Path:
+    """The folder itself, or its closest parent that exists (a drive's root even when that is missing)."""
     path = Path(path)
     while not path.exists() and path.parent != path:
         path = path.parent
-    return shutil.disk_usage(path).free
+    return path
+
+
+def _free(path: Path) -> int:
+    """Free bytes on the drive holding path, which need not exist yet."""
+    return shutil.disk_usage(nearest_existing(path)).free
 
 
 def _windows_drives() -> list[tuple[Path, int, bool]]:
