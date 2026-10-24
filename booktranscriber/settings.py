@@ -14,6 +14,10 @@ class Settings:
     device: str = "auto"
     language: str = "fa"
     timestamps: bool = False
+    llm_model: str | None = None
+    llm_model_path: str | None = None
+    llm_backend: str | None = None
+    llm_load_seconds: float | None = None
 
 
 def load_settings(path: Path) -> Settings:

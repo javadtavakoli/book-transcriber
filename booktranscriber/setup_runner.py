@@ -3,8 +3,10 @@ import dataclasses
 import shutil
 import subprocess
 import sys
+import tarfile
 import threading
 import time
+import zipfile
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,15 +14,17 @@ from typing import Callable
 
 import httpx
 
-from . import paths, setup_sources
+from . import llm_sources, paths, setup_sources
 from .downloader import ChecksumError, DownloadCancelled, NetworkError, download_file
+from .llm_catalog import MODELS, choose_backend, choose_llm
 from .settings import Settings
-from .syscheck import WHISPER_REPOS, SystemInfo, choose_whisper_model
+from .syscheck import WHISPER_REPOS, SystemInfo, choose_whisper_model, current_os
 
-ITEMS = ("check", "gpu", "whisper", "test")
+ITEMS = ("check", "gpu", "whisper", "llm", "test")
 GB = 1_000_000_000
 GPU_ESTIMATE = int(1.6 * GB)
 MODEL_ESTIMATE = {"large-v3": int(3.1 * GB), "large-v3-turbo": int(1.7 * GB)}
+LLM_RUNTIME_ESTIMATE = 60_000_000   # the runtime archives, ahead of the exact sizes
 SELFTEST_TIMEOUT = 600
 
 
@@ -37,6 +41,9 @@ class SetupPlan:
     whisper_model: str
     reuse_model_path: Path | None
     needed_bytes: int
+    include_llm: bool = False
+    llm_model: str | None = None
+    llm_backend: str = "vulkan"
 
 
 @dataclass
@@ -50,11 +57,16 @@ class SetupProgress:
     eta_seconds: float | None
 
 
-def make_plan(info: SystemInfo, existing: Path | None) -> SetupPlan:
+def make_plan(info: SystemInfo, existing: Path | None, include_llm: bool | None = None) -> SetupPlan:
     include_gpu = info.os != "macos" and info.gpu is not None
     model = choose_whisper_model(info)
+    llm_model, recommended = choose_llm(info)
+    include_llm = recommended if include_llm is None else include_llm
     needed = (GPU_ESTIMATE if include_gpu else 0) + (0 if existing else MODEL_ESTIMATE[model])
-    return SetupPlan(info, include_gpu, model, existing, int(needed * 1.1))
+    if include_llm:
+        needed += MODELS[llm_model].size + LLM_RUNTIME_ESTIMATE
+    return SetupPlan(info, include_gpu, model, existing, int(needed * 1.1),
+                     include_llm, llm_model, choose_backend(info))
 
 
 def model_dir_for(model: str) -> Path:
@@ -119,7 +131,7 @@ class _Meter:
 
 def run_setup(plan: SetupPlan, settings: Settings, on_progress: Callable[[SetupProgress], None],
               cancel: threading.Event, *, downloader=download_file, sources=setup_sources,
-              selftest=run_selftest) -> Settings:
+              selftest=run_selftest, llm=llm_sources) -> Settings:
     gpu_dir = paths.gpu_dir()
     try:
         with httpx.Client(follow_redirects=True, timeout=30) as client:
@@ -131,42 +143,91 @@ def run_setup(plan: SetupPlan, settings: Settings, on_progress: Callable[[SetupP
     except LookupError as e:
         raise SetupError("gpu", str(e)) from e
 
-    pending_gpu = [f for f in gpu_files if not _marker(f).exists()]
-    total = sum(f.size for f in gpu_files + model_files)
+    def extract_wheel(f):
+        try:
+            sources.extract_nvidia_libs(f.dest, gpu_dir, plan.info.os == "windows", cancel)
+        except DownloadCancelled as e:
+            raise SetupError("cancelled") from e
+        _marker(f).write_text("ok")
+
+    steps = [_Step("gpu", f, _marker(f).exists(), extract_wheel, unpack=True) for f in gpu_files]
+    steps += [_Step("whisper", f) for f in model_files]
+    if plan.include_llm:
+        steps += _llm_steps(plan.info.os, plan.llm_model, plan.llm_backend, llm, cancel)
+    meter = _fetch(steps, on_progress, cancel, downloader, check=True)
+    meter.report("test", 0, 1)
+    selftest(str(model_path), settings.device, cancel=cancel)
+    meter.report("test", 1, 1)
+    done = dataclasses.replace(settings, setup_done=True, whisper_model=plan.whisper_model,
+                               whisper_model_path=str(model_path))
+    return _with_llm(done, plan.llm_model, plan.llm_backend, llm) if plan.include_llm else done
+
+
+def run_llm_setup(model_key: str, backend: str, settings: Settings, on_progress: Callable[[SetupProgress], None],
+                  cancel: threading.Event, *, downloader=download_file, llm=llm_sources) -> Settings:
+    """Just the local AI helper's downloads, for people who skipped it during setup."""
+    _fetch(_llm_steps(current_os(), model_key, backend, llm, cancel), on_progress, cancel, downloader)
+    return _with_llm(settings, model_key, backend, llm)
+
+
+def _with_llm(settings: Settings, model_key: str, backend: str, llm) -> Settings:
+    return dataclasses.replace(settings, llm_model=model_key, llm_backend=backend,
+                               llm_model_path=str(llm.model_file(model_key).dest))
+
+
+@dataclass
+class _Step:
+    item: str
+    file: object
+    skip: bool = False          # already in place from an earlier run
+    after: Callable | None = None   # runs once the file has arrived (unpack the archive)
+    unpack: bool = False        # needs room to unpack next to itself
+
+
+def _llm_steps(os_name: str, model_key: str, backend: str, llm, cancel) -> list[_Step]:
+    def unpacker(archive_backend):
+        def extract(f):
+            try:
+                llm.extract_archive(Path(f.dest), llm.runtime_dir(archive_backend), cancel)
+            except DownloadCancelled as e:
+                raise SetupError("cancelled") from e
+            except (OSError, RuntimeError, tarfile.TarError, zipfile.BadZipFile) as e:
+                raise SetupError("disk" if getattr(e, "errno", None) == 28 else "network", str(e)) from e
+        return extract
+    steps = [_Step("llm", f, llm.server_binary(b) is not None, unpacker(b), unpack=True)
+             for b, f in llm.runtime_files(os_name, backend)]
+    return steps + [_Step("llm", llm.model_file(model_key))]
+
+
+def _fetch(steps: list[_Step], on_progress, cancel, downloader, check: bool = False) -> "_Meter":
+    """Download every step in order under one overall meter, checking disk space first."""
+    total = sum(st.file.size for st in steps)
     # Only what is still to arrive counts (a resumed download already has part of it on disk),
-    # plus room to unpack each pending wheel next to itself.
-    needed = sum(_left(f) for f in pending_gpu + model_files) + sum(f.size for f in pending_gpu)
+    # plus room to unpack each pending archive next to itself.
+    pending = [st for st in steps if not st.skip]
+    needed = sum(_left(st.file) for st in pending) + sum(st.file.size for st in pending if st.unpack)
     free = shutil.disk_usage(paths.data_dir()).free
     if free < needed:
         raise SetupError("disk", needed=needed, free=free)
 
     meter = _Meter(total, on_progress)
-    meter.report("check", 1, 1)
-    for item, files in (("gpu", gpu_files), ("whisper", model_files)):
-        item_total = sum(f.size for f in files)
+    if check:
+        meter.report("check", 1, 1)
+    for item in dict.fromkeys(st.item for st in steps):
+        group = [st for st in steps if st.item == item]
+        item_total = sum(st.file.size for st in group)
         item_base = meter.base
-        for f in files:
-            if item == "gpu" and _marker(f).exists():
-                meter.base += f.size
-                continue
-
-            def prog(n, f=f):
-                meter.report(item, meter.base - item_base + n, item_total, n)
-            _download(downloader, f, prog, cancel)
+        for st in group:
+            f = st.file
+            if not st.skip:
+                def prog(n, f=f):
+                    meter.report(item, meter.base - item_base + n, item_total, n)
+                _download(downloader, f, prog, cancel)
+                if st.after:
+                    st.after(f)
             meter.base += f.size
-            if item == "gpu":
-                try:
-                    sources.extract_nvidia_libs(f.dest, gpu_dir, plan.info.os == "windows", cancel)
-                except DownloadCancelled as e:
-                    raise SetupError("cancelled") from e
-                _marker(f).write_text("ok")
         meter.report(item, item_total, item_total)
-
-    meter.report("test", 0, 1)
-    selftest(str(model_path), settings.device, cancel=cancel)
-    meter.report("test", 1, 1)
-    return dataclasses.replace(settings, setup_done=True, whisper_model=plan.whisper_model,
-                               whisper_model_path=str(model_path))
+    return meter
 
 
 def _left(f) -> int:

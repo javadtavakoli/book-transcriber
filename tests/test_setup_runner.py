@@ -59,7 +59,7 @@ def no_test(*a, **k):
 def test_progress_aggregates_and_finishes():
     seen = []
     src = FakeSources()
-    s = run_setup(make_plan(GPU_INFO, None), Settings(), seen.append, threading.Event(),
+    s = run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), seen.append, threading.Event(),
                   downloader=fake_dl, sources=src, selftest=no_test)
     assert seen[-1].overall_done == seen[-1].overall_total == 1000
     overall = [p.overall_done for p in seen]
@@ -72,13 +72,13 @@ def test_progress_aggregates_and_finishes():
 
 def test_rerun_skips_extracted_wheels():
     src = FakeSources()
-    run_setup(make_plan(GPU_INFO, None), Settings(), no_test, threading.Event(), downloader=fake_dl, sources=src, selftest=no_test)
+    run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), no_test, threading.Event(), downloader=fake_dl, sources=src, selftest=no_test)
     calls = []
 
     def counting_dl(url, *a, **k):
         calls.append(url)
         fake_dl(url, *a, **k)
-    run_setup(make_plan(GPU_INFO, None), Settings(), no_test, threading.Event(), downloader=counting_dl, sources=src, selftest=no_test)
+    run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), no_test, threading.Event(), downloader=counting_dl, sources=src, selftest=no_test)
     assert not [c for c in calls if c.startswith("u")]
 
 
@@ -88,14 +88,14 @@ def test_reuse_skips_model_download(tmp_path):
     def dl(url, *a, **k):
         calls.append(url)
         fake_dl(url, *a, **k)
-    s = run_setup(make_plan(GPU_INFO, tmp_path), Settings(), no_test, threading.Event(),
+    s = run_setup(make_plan(GPU_INFO, tmp_path, include_llm=False), Settings(), no_test, threading.Event(),
                   downloader=dl, sources=FakeSources(), selftest=no_test)
     assert calls == ["u0", "u1"] and s.whisper_model_path == str(tmp_path)
 
 
 def test_disk_full():
     with pytest.raises(SetupError) as e:
-        run_setup(make_plan(GPU_INFO, None), Settings(), no_test, threading.Event(),
+        run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), no_test, threading.Event(),
                   downloader=lambda *a, **k: pytest.fail("no download"), sources=FakeSources(model_sizes=(10**15,)),
                   selftest=no_test)
     assert e.value.kind == "disk"
@@ -106,14 +106,14 @@ def test_download_errors_map_kind(exc, kind):
     def dl(*a, **k):
         raise exc
     with pytest.raises(SetupError) as e:
-        run_setup(make_plan(GPU_INFO, None), Settings(), no_test, threading.Event(), downloader=dl,
+        run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), no_test, threading.Event(), downloader=dl,
                   sources=FakeSources(), selftest=no_test)
     assert e.value.kind == kind
 
 
 def test_selftest_runs_with_device_and_model_path():
     got = []
-    run_setup(make_plan(GPU_INFO, None), Settings(device="cpu"), no_test, threading.Event(), downloader=fake_dl,
+    run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(device="cpu"), no_test, threading.Event(), downloader=fake_dl,
               sources=FakeSources(), selftest=lambda path, device, cancel=None: got.append((path, device)))
     assert got == [(str(paths.models_dir() / "faster-whisper-large-v3"), "cpu")]
 
@@ -122,7 +122,7 @@ def test_selftest_error_propagates():
     def bad(*a, **k):
         raise SetupError("gpu", "x")
     with pytest.raises(SetupError) as e:
-        run_setup(make_plan(GPU_INFO, None), Settings(), no_test, threading.Event(), downloader=fake_dl,
+        run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), no_test, threading.Event(), downloader=fake_dl,
                   sources=FakeSources(), selftest=bad)
     assert e.value.kind == "gpu"
 
@@ -159,7 +159,7 @@ def test_selftest_native_crash(monkeypatch, device, kind):
 def test_run_setup_passes_cancel_to_selftest():
     got = []
     cancel = threading.Event()
-    run_setup(make_plan(GPU_INFO, None), Settings(), no_test, cancel, downloader=fake_dl,
+    run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), no_test, cancel, downloader=fake_dl,
               sources=FakeSources(), selftest=lambda path, device, cancel=None: got.append(cancel))
     assert got == [cancel]
 
@@ -189,3 +189,104 @@ def test_disk_error_reports_real_numbers(monkeypatch):
         run_setup(make_plan(SystemInfo("linux", None, 10**12), None), Settings(), no_test, threading.Event(),
                   downloader=fake_dl, sources=FakeSources(gpu_sizes=(), model_sizes=(600,)), selftest=no_test)
     assert (e.value.kind, e.value.needed, e.value.free) == ("disk", 600, 50)
+
+
+class FakeLlm:
+    """Stands in for llm_sources: tiny archives, a tiny model, and an extraction that makes llama-server."""
+
+    def __init__(self, archive_sizes=(200, 100), model_size=700):
+        self.archive_sizes, self.model_size, self.extracted = archive_sizes, model_size, []
+
+    def runtime_dir(self, backend):
+        return paths.data_dir() / "llm" / f"fake-{backend}"
+
+    def server_binary(self, backend):
+        d = self.runtime_dir(backend)
+        return d / "llama-server" if (d / ".done").exists() else None
+
+    def runtime_files(self, os_name, backend):
+        names = [backend, "cpu"] if os_name != "macos" else ["metal"]
+        return [(b, RemoteFile(f"r{b}", s, None, paths.data_dir() / "llm" / "archives" / f"{b}.tar.gz"))
+                for b, s in zip(names, self.archive_sizes)]
+
+    def model_file(self, key):
+        return RemoteFile(f"model-{key}", self.model_size, None, paths.data_dir() / "llm" / "models" / f"{key}.gguf")
+
+    def extract_archive(self, archive, dest, cancel=None):
+        if cancel is not None and cancel.is_set():
+            raise DownloadCancelled()
+        self.extracted.append((Path(archive).name, Path(dest).name))
+        Path(dest).mkdir(parents=True, exist_ok=True)
+        (Path(dest) / "llama-server").write_bytes(b"x")
+        (Path(dest) / ".done").write_text("ok")
+        Path(archive).unlink()
+
+
+def test_plan_includes_llm_when_recommended():
+    p = make_plan(GPU_INFO, None)                       # 6141 MiB meets the small tier
+    assert p.include_llm and p.llm_model == "gemma-4-e4b" and p.llm_backend == "vulkan"
+    assert make_plan(GPU_INFO, None, include_llm=False).needed_bytes < p.needed_bytes
+    weak = make_plan(SystemInfo("linux", None, 10**12), None)
+    assert not weak.include_llm
+    assert make_plan(SystemInfo("linux", None, 10**12), None, include_llm=True).include_llm
+    mac = make_plan(SystemInfo("macos", None, 10**12, ram_bytes=16 * 10**9), None)
+    assert mac.llm_backend == "metal" and mac.include_llm
+
+
+def test_run_setup_downloads_llm_and_sets_settings():
+    seen, llm = [], FakeLlm()
+    s = run_setup(make_plan(GPU_INFO, None), Settings(), seen.append, threading.Event(), downloader=fake_dl,
+                  sources=FakeSources(), selftest=no_test, llm=llm)
+    assert Path(s.llm_model_path).exists() and s.llm_model == "gemma-4-e4b" and s.llm_backend == "vulkan"
+    assert [e[1] for e in llm.extracted] == ["fake-vulkan", "fake-cpu"]
+    assert llm.server_binary("vulkan") and llm.server_binary("cpu")
+    items = [p.item for p in seen]
+    assert items.index("llm") > items.index("whisper") and items[-1] == "test"
+    overall = [p.overall_done for p in seen]
+    assert overall == sorted(overall) and seen[-1].overall_done == seen[-1].overall_total == 1000 + 1000
+    assert s.setup_done
+
+
+def test_run_setup_without_llm_skips_it():
+    s = run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), no_test, threading.Event(),
+                  downloader=fake_dl, sources=FakeSources(), selftest=no_test,
+                  llm=type("Boom", (), {"__getattr__": lambda self, n: pytest.fail("llm touched")})())
+    assert s.llm_model is None and s.llm_model_path is None and s.llm_backend is None
+
+
+def test_disk_check_includes_llm(monkeypatch):
+    import shutil
+    from collections import namedtuple
+    Usage = namedtuple("Usage", "total used free")
+    plan = make_plan(GPU_INFO, None)
+    # whisper-only needs 1000 (gpu 400 + 400 unpack + 600 model - fits); the helper adds 700 + 2*(200+100)
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: Usage(10**6, 0, 1400 + 700 + 599))
+    with pytest.raises(SetupError) as e:
+        run_setup(plan, Settings(), no_test, threading.Event(), downloader=fake_dl, sources=FakeSources(),
+                  selftest=no_test, llm=FakeLlm())
+    assert (e.value.kind, e.value.needed) == ("disk", 1400 + 700 + 600)
+
+
+def test_llm_cancel_during_extract_maps_to_cancelled():
+    cancel = threading.Event()
+
+    def dl(url, dest, size, sha, prog, c, client=None):
+        fake_dl(url, dest, size, sha, prog, c)
+        if url.startswith("rvulkan"):
+            cancel.set()
+    with pytest.raises(SetupError) as e:
+        run_setup(make_plan(GPU_INFO, None), Settings(), no_test, cancel, downloader=dl,
+                  sources=FakeSources(), selftest=no_test, llm=FakeLlm())
+    assert e.value.kind == "cancelled"
+
+
+def test_run_llm_setup_alone():
+    from booktranscriber.setup_runner import run_llm_setup
+    seen, llm = [], FakeLlm()
+    base = Settings(setup_done=True, whisper_model="large-v3", whisper_model_path="/w")
+    s = run_llm_setup("gemma-4-e4b", "vulkan", base, seen.append, threading.Event(),
+                      downloader=fake_dl, llm=llm)
+    assert Path(s.llm_model_path).name == "gemma-4-e4b.gguf" and Path(s.llm_model_path).exists()
+    assert (s.llm_model, s.llm_backend) == ("gemma-4-e4b", "vulkan")
+    assert (s.whisper_model, s.whisper_model_path, s.setup_done) == ("large-v3", "/w", True)
+    assert {p.item for p in seen} == {"llm"} and seen[-1].overall_done == seen[-1].overall_total
