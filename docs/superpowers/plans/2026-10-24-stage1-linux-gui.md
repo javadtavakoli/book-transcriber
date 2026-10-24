@@ -34,6 +34,12 @@
 
 ---
 
+## Owner checkpoints
+
+`<scratch>` = the session's scratchpad directory.
+
+Steps marked **👤 Owner checkpoint** need the owner at the keyboard (GUI interaction, network toggling, long GPU runs). The executing agent finishes all automated steps of the task, commits, lists that task's checkpoint items for the owner, and continues with the next task; nothing in a checkpoint is reported as verified until the owner confirms it.
+
 ## File Structure
 
 ```
@@ -87,6 +93,7 @@ tests/                 one test module per core module + tests/gui/
   - `@dataclass TranscribeOptions(language: str = "fa", prompt: str | None = None, timestamps: bool = False)`
   - `@dataclass Segment(start: float, end: float, text: str)`
   - `output_path(audio: str, explicit: str | None = None, suffix: str = RAW_SUFFIX) -> str`
+  - `corrected_path_for(raw_path: str) -> str` — same folder as the raw file; replaces a trailing `RAW_SUFFIX` with `CORRECTED_SUFFIX`, else `<stem> + CORRECTED_SUFFIX`.
   - `format_timestamp(seconds: float) -> str` → `"[h:mm:ss]"`
   - `format_line(seg: Segment, timestamps: bool) -> str` → `"[0:01:05] text"` or `"text"` (stripped, no newline)
   - `load_model(name_or_path: str, device: str, download_root: str | None, log: Callable[[str], None]) -> tuple[WhisperModel, str]` — same backend ladder as today `[("cuda","float16"),("cuda","int8_float16"),("cpu","int8")]`, filtered by device; returns `(model, "cuda/float16")`; raises `ModelLoadError` if all fail (no `sys.exit`).
@@ -109,6 +116,10 @@ def test_output_path_default_next_to_audio(tmp_path):
 
 def test_output_path_corrected_suffix(tmp_path):
     assert output_path(str(tmp_path / "a.wav"), suffix=CORRECTED_SUFFIX).endswith("a - متن اصلاح‌شده.txt")
+
+def test_corrected_path_follows_raw_location():
+    assert corrected_path_for("/docs/جلسه - متن خام.txt") == "/docs/جلسه - متن اصلاح‌شده.txt"
+    assert corrected_path_for("/docs/notes.txt") == "/docs/notes - متن اصلاح‌شده.txt"
 
 def test_output_path_explicit_wins():
     assert output_path("/x/a.wav", "/y/out.txt") == "/y/out.txt"
@@ -158,7 +169,7 @@ def test_gpu_env_windows():
 
 - [ ] **Step 6: Run tests** — Expected: PASS.
 
-- [ ] **Step 7: Real-GPU regression check.** Make a 60-second clip: `venv/bin/python -c "import av"` is available; use `ffmpeg` if installed, else PyAV: write a small script in the scratchpad that copies the first 60 s of `~/Downloads/577e5c4b_28.m4a` to `/tmp/…/clip.wav`. Run `./run.sh /path/clip.wav -t` and check: log shows `loaded on cuda/float16`, output file `clip - متن خام.txt` exists with `[0:00:..]` lines. Run `./run.sh -h` and diff against `git show HEAD:transcribe.py`-era help (identical options).
+- [ ] **Step 7: Real-GPU regression check.** Make a 60-second clip: `venv/bin/python -c "import av"` is available; use `ffmpeg` if installed, else PyAV: write a small script in the scratchpad that copies the first 60 s of `~/Downloads/577e5c4b_28.m4a` to `<scratch>/clip.wav`. Run `./run.sh /path/clip.wav -t` and check: log shows `loaded on cuda/float16`, output file `clip - متن خام.txt` exists with `[0:00:..]` lines. Run `./run.sh -h` and diff against `git show HEAD:transcribe.py`-era help (identical options).
 
 - [ ] **Step 8: Commit** — `git add booktranscriber tests transcribe.py requirements-dev.txt && git commit -m "Extract side-effect-free engine package; thin CLI over it"`
 
@@ -184,7 +195,7 @@ def test_gpu_env_windows():
   - `probe_audio(path: str) -> float` — opens with `av.open`, returns duration seconds; raises `BadAudio` for missing audio stream / decode error; `FileNotFoundError` passthrough.
   - `run(argv: list[str], emit: Callable[[dict], None], loader=engine.load_model) -> int` — exit 0 on done, 1 on error (after emitting an `error` event).
   - Writes to `out + ".part"` and `os.replace` to `out` on success; on any failure the `.part` is removed.
-  - `--selftest`: load model, transcribe 2 s of silence (`numpy.zeros(32000, float32)`), emit `loaded` then `done` with `out=""`, `segments=N`.
+  - `--selftest`: load model, transcribe 2 s of low-level noise (`numpy.random.default_rng(0).normal(0, 0.01, 32000).astype(float32)`) **with `vad_filter=False`** and **fully consume** the segment generator (so the encoder and CUDA kernels really run), emit `loaded` then `done` with `out=""`, `segments=N`.
   - `worker_command(args: list[str]) -> list[str]` — `[sys.executable, "-m", "booktranscriber.worker", *args]`, or `[sys.executable, "--worker", *args]` when `getattr(sys, "frozen", False)`.
 - `__main__.py`: `--worker` as first arg → `worker.main(rest)`; otherwise `gui.app.main(sys.argv)`.
 
@@ -225,6 +236,12 @@ def test_failure_removes_part(tmp_path, wav_file, exploding_loader):
     assert run([... same args ...], events.append, loader=exploding_loader) == 1
     assert not out.exists() and not (tmp_path / "o.txt.part").exists() and events[-1]["kind"] == "unknown"
 
+def test_cuda_error_mid_stream_is_model_kind(tmp_path, wav_file, cuda_failing_loader):
+    # cuda_failing_loader: transcribe yields one segment then raises RuntimeError("Library libcublas.so.12 is not found")
+    out = tmp_path / "o.txt"; events = []
+    assert run(["--audio", str(wav_file), "--out", str(out), "--model", "x"], events.append, loader=cuda_failing_loader) == 1
+    assert events[-1]["kind"] == "model" and not (tmp_path / "o.txt.part").exists()
+
 def test_worker_command_source_mode(monkeypatch):
     monkeypatch.delattr(sys, "frozen", raising=False)
     assert worker_command(["--selftest"])[1:] == ["-m", "booktranscriber.worker", "--selftest"]
@@ -233,9 +250,9 @@ def test_worker_command_source_mode(monkeypatch):
 `wav_file` fixture (in `tests/conftest.py`): 2 s of 16 kHz silence written with the stdlib `wave` module. `fake_loader`/`exploding_loader` fixtures live in `tests/test_worker.py`; `FakeModel.transcribe(audio, **kw)` returns `(iter(segs), SimpleNamespace(duration=4.0))` with objects having `.start/.end/.text`.
 
 - [ ] **Step 2: Run** `venv/bin/python -m pytest tests/test_protocol.py tests/test_worker.py -v` — Expected: FAIL.
-- [ ] **Step 3: Implement** `protocol.py`, `worker.py`, `__main__.py`. `worker.main(argv)` reconfigures stdout to utf-8, calls `register_dll_dirs_from_env()`, and passes `emit=lambda e: print(encode(e), flush=True)`. `engine.transcribe` is called on the model returned by the loader; `bad_audio` also covers `av.error.InvalidDataError` raised during decode. Write lines via `format_line` + `"\n"`, flushing each.
+- [ ] **Step 3: Implement** `protocol.py`, `worker.py`, `__main__.py`. `worker.main(argv)` reconfigures stdout to utf-8, calls `register_dll_dirs_from_env()`, and passes `emit=lambda e: print(encode(e), flush=True)`. `engine.transcribe` is called on the model returned by the loader; `bad_audio` also covers `av.error.InvalidDataError` raised during decode. A `RuntimeError`/`OSError` whose message contains `cublas`, `cudnn`, `cuda` (case-insensitive) — at load **or mid-iteration** — maps to kind `model`. Write lines via `format_line` + `"\n"`, flushing each.
 - [ ] **Step 4: Run tests** — Expected: PASS.
-- [ ] **Step 5: Real run.** `LD_LIBRARY_PATH=$(venv/bin/python -c "from booktranscriber.gpu import *; print(':'.join(nvidia_lib_dirs(site_nvidia_roots(), False)))") venv/bin/python -m booktranscriber --worker --audio clip.wav --out /tmp/…/w.txt --model large-v3 --download-root models` — Expected: JSON lines `loaded` (`cuda/float16`), `duration`, `segment`s, `progress`, `done`. Then `--selftest --model large-v3 --download-root models` — Expected: `done`.
+- [ ] **Step 5: Real run.** `LD_LIBRARY_PATH=$(venv/bin/python -c "from booktranscriber.gpu import *; print(':'.join(nvidia_lib_dirs(site_nvidia_roots(), False)))") venv/bin/python -m booktranscriber --worker --audio clip.wav --out <scratch>/w.txt --model large-v3 --download-root models` — Expected: JSON lines `loaded` (`cuda/float16`), `duration`, `segment`s, `progress`, `done`. Then `--selftest --model large-v3 --download-root models` — Expected: `done`.
 - [ ] **Step 6: Commit** — `git commit -m "Add transcription worker process with JSON-line events"`
 
 ---
@@ -458,7 +475,7 @@ def test_run_setup_cancel(...):                      # fake_dl raises DownloadCa
 ```
 
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
-- [ ] **Step 5: Real integration (network).** Script in scratchpad with `BT_DATA_DIR=/tmp/…/bt-data`: build plan from `detect_system`, `existing=None`, run `run_setup` printing progress every 2 s. Expected: three wheels download and extract into `bt-data/gpu/nvidia/{cublas,cudnn,cuda_nvrtc}/lib`, model files into `bt-data/models/…`, self-test passes on `cuda/float16`. Interrupt once with Ctrl-C mid-model and re-run → resumes (check log of Range header). To prove the extracted libs (not the venv's) are used, the self-test env is built from `nvidia_lib_dirs([paths.gpu_dir()/"nvidia"], False)` only. Then delete `/tmp/…/bt-data`.
+- [ ] **Step 5: Real integration (network).** Script in scratchpad with `BT_DATA_DIR=<scratch>/bt-data`: build plan from `detect_system`, `existing=None`, run `run_setup` printing progress every 2 s. Expected: three wheels download and extract into `bt-data/gpu/nvidia/{cublas,cudnn,cuda_nvrtc}/lib`, model files into `bt-data/models/…`, self-test passes on `cuda/float16`. Interrupt once with Ctrl-C mid-model and re-run → resumes (check log of Range header). **Negative check:** run `run_selftest` with `device="cuda"` and an env with *no* NVIDIA lib dirs → it must raise `SetupError("gpu")`; if it passes, the self-test isn't exercising the GPU and must be fixed before moving on. To prove the extracted libs (not the venv's) are used, the self-test env is built from `nvidia_lib_dirs([paths.gpu_dir()/"nvidia"], False)` only. Then delete `<scratch>/bt-data`.
 - [ ] **Step 6: Commit** — `git commit -m "Add setup sources (PyPI CUDA wheels, HF model) and setup runner"`
 
 ---
@@ -569,7 +586,7 @@ def test_tr_and_switch(qtbot):
   - `@dataclass TranscribeJob(audio: str, out: str, model: str, download_root: str | None, language: str, prompt: str | None, timestamps: bool, device: str)`
   - `class TranscribeRunner(QObject)`: signals `loaded(str)`, `duration(float)`, `segment(float, str)`, `progress(float, float, float)` (done, total, eta), `finished(str, int)` (out, segments), `failed(str, str)` (kind, message); `start(job)`, `cancel()` (kill; removes `out + ".part"`), `is_running() -> bool`. Uses `QProcess` with `worker_command` and env from `gpu_env(nvidia_lib_dirs([gpu_dir/nvidia] + site roots))`; reads stdout line-buffered as UTF-8; non-zero exit without an `error` event → `failed("unknown", <last stderr lines>)`; stderr also appended to `logs_dir()/worker.log`.
   - `class SetupRunner(QObject)`: signals `progress(object)` (SetupProgress), `finished(object)` (Settings), `failed(str)` (kind); `start(plan, settings)`, `pause()` (sets cancel → `failed("cancelled")`), `is_running()`. Runs `run_setup` in a `QThread`.
-- Produces (`main_window.py`): `class MainWindow(QMainWindow)` — `__init__(i18n, settings)`; a `QStackedWidget` with `setup`, `home`, `flow`, `export`, `review` pages (placeholders until Tasks 10–12 fill them); a top-right `QToolButton` showing `"EN"` when UI is fa and `"فا"` when en, toggling `i18n.set_language`, saving `settings.ui_language`; on `language_changed`: `QApplication.setLayoutDirection(RightToLeft/LeftToRight)` and every page's `retranslate()`; `show_page(name: str)`; `busy() -> bool` (any runner running); `closeEvent` asks `tr("confirm.quit_busy")` when busy, then cancels runners.
+- Produces (`main_window.py`): `class MainWindow(QMainWindow)` — `__init__(i18n, settings)`; a `QStackedWidget` with `setup`, `home`, `flow`, `export`, `review` pages (placeholders until Tasks 10–12 fill them); a top-right `QToolButton` showing `"EN"` when UI is fa and `"فا"` when en, toggling `i18n.set_language`, saving `settings.ui_language`; on `language_changed`: `QApplication.setLayoutDirection(RightToLeft/LeftToRight)` and every page's `retranslate()`; `show_page(name: str)`; `busy() -> bool` (any runner running); `closeEvent` asks `tr("confirm.quit_busy")` when busy, then cancels runners and **waits for the SetupRunner's QThread to finish** (`thread.quit(); thread.wait(10000)`) and for the worker QProcess to exit before accepting, avoiding "QThread destroyed while running".
 - Produces (`app.py`): `main(argv) -> int` — `QApplication`, app font = system font with Persian fallbacks (`font.setFamilies([system_family, "Vazirmatn", "Noto Sans Arabic"])`), load settings, `I18n(initial_language(settings.ui_language, QLocale.system().name()))`, open `setup` if not `settings.setup_done` or model path missing, else `home`.
 - `run-gui.sh`: `exec "$HERE/venv/bin/python" -m booktranscriber "$@"` (cd-independent). `run-gui.bat` analogous with `pythonw.exe` (no console).
 
@@ -595,7 +612,7 @@ def test_runner_cancel_kills_and_removes_part(qtbot, monkeypatch, tmp_path):  # 
 ```
 
 - [ ] **Step 2: Run** `venv/bin/python -m pytest tests/gui -v` — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
-- [ ] **Step 5: Manual.** `./run-gui.sh` opens a window on the setup page; toggling فا/EN mirrors the layout.
+- [ ] **Step 5: 👤 Owner checkpoint.** `./run-gui.sh` opens a window on the setup page; toggling فا/EN mirrors the layout.
 - [ ] **Step 6: Commit** — `git commit -m "Add GUI shell, worker/setup runners and language toggle"`
 
 ---
@@ -631,7 +648,7 @@ def test_persian_digits(qtbot, fake_system_ok): v = SetupView(I18n("fa"), Settin
 ```
 
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
-- [ ] **Step 5: Manual, real network.** `BT_DATA_DIR=/tmp/…/bt-fresh ./run-gui.sh` with the reuse box **unticked**: watch full setup to Ready; pull the network cable / `nmcli networking off` mid-model → network error → reconnect → Try again resumes. Then run once normally (default data dir) with reuse ticked → setup takes seconds (GPU libs + test only).
+- [ ] **Step 5: 👤 Owner checkpoint (the agent cannot drive the Qt window — do not mark verified without the owner's report).** Owner runs `BT_DATA_DIR=<scratch>/bt-fresh ./run-gui.sh` with the reuse box unticked and watches setup to Ready; turns Wi-Fi off mid-model → network error → back on → Try again resumes. Then `./run-gui.sh` (default data dir) with reuse ticked → setup takes seconds. *Agents must not toggle networking (it would cut their own session).*
 - [ ] **Step 6: Commit** — `git commit -m "Add first-run setup screens with live progress and friendly errors"`
 
 ---
@@ -674,7 +691,7 @@ def test_close_while_busy_asks_and_kills(qtbot, fake_runner, monkeypatch): MainW
 ```
 
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
-- [ ] **Step 5: Manual, real GPU.** `./run-gui.sh`: drop the 60 s clip → names (load imported example list) → Continue → live text appears, progress moves, ends on the result page; file `clip - متن خام.txt` next to the clip. Drop a PDF → friendly error, no model load (check `nvidia-smi` shows no worker). Start a long file and close the window → confirm → no `booktranscriber.worker` left in `ps aux`.
+- [ ] **Step 5: 👤 Owner checkpoint.** Owner runs `./run-gui.sh`: drop the 60 s clip → names (load imported example list) → Continue → live text appears, progress moves, ends on the result page; file `clip - متن خام.txt` next to the clip. Drop a PDF → friendly error, no model load (check `nvidia-smi` shows no worker). Start a long file and close the window → confirm → no `booktranscriber.worker` left in `ps aux`.
 - [ ] **Step 6: Commit** — `git commit -m "Add home, names and transcribing steps"`
 
 ---
@@ -690,7 +707,7 @@ def test_close_while_busy_asks_and_kills(qtbot, fake_runner, monkeypatch): MainW
 - Produces:
   - Result step in `FlowView`: shows the raw transcript (RTL for `fa`) and three choices: **Fix it here (private)** — disabled card with `result.local.soon` ("coming in the next version"); **Prepare for ChatGPT / Claude / Gemini** → export page (names pre-filled from the names step); **Just save the text** → `result.saved_at` with `Open folder`. Opening a recent item lands here too, loading the raw file, with the export page's names field empty and editable.
   - `class ExportView(QWidget)`: `load(raw_path: str, names: list[str], language: str)`; how-to text (`export.howto`, 3 numbered steps); a row per `ExportPart`: `Part {i} of {n}`, `Copy` (to `QGuiApplication.clipboard()`, button flashes "Copied ✓"), and one `Save all parts…` (folder dialog → `"<name> - part 1 of 4.txt"` …); a large `QPlainTextEdit` "Paste the AI's answers here (all parts together is fine)"; `Check the answers` → `parse_answer` over the whole box → `apply_answer` → signal `review_ready(object)` (`list[LineFix]`) with `raw_lines`. If zero lines recognised → inline message `export.nothing_recognised` and stay.
-  - `class ReviewView(QWidget)`: `load(raw_path, lines, fixes, language)`; summary line ("{fixed} lines fixed · {kept} kept as they were · {missing} not answered yet"); a `QTableWidget` with columns `#`, original, corrected (HTML with `word_diff`: removed = red strikethrough, added = green bold), and a `Use fix` checkbox (checked for accepted, unchecked & disabled-looking for `too_different` with tooltip `review.too_different`, hidden for `same`/`missing`); filter toggle "Show only changed lines" (default on); `Save` → writes `corrected_lines(...)` honouring the checkboxes to `output_path(audio, suffix=CORRECTED_SUFFIX)` (beside the raw file), updates recents' `corrected_path`, shows `review.saved` + `Open folder`; `Copy`; `Back to answers` (keeps pasted text).
+  - `class ReviewView(QWidget)`: `load(raw_path, lines, fixes, language)`; summary line ("{fixed} lines fixed · {kept} kept as they were · {missing} not answered yet"); a `QTableWidget` with columns `#`, original, corrected (HTML with `word_diff`: removed = red strikethrough, added = green bold), and a `Use fix` checkbox (checked for accepted, unchecked & disabled-looking for `too_different` with tooltip `review.too_different`, hidden for `same`/`missing`); filter toggle "Show only changed lines" (default on); `Save` → writes `corrected_lines(...)` honouring the checkboxes to `corrected_path_for(raw_path)` (beside the raw file, even if the raw file was redirected away from the audio folder), updates recents' `corrected_path`, shows `review.saved` + `Open folder`; `Copy`; `Back to answers` (keeps pasted text).
   - Text cells use `Qt.RightToLeft` when language is `fa`.
 
 - [ ] **Step 1: Write failing tests**
@@ -702,6 +719,7 @@ def test_paste_garbage_stays(qtbot, raw_file):  # paste "hello" → no signal, e
 def test_review_save_respects_unticked(qtbot, tmp_path):
     lines = ["[0:00:01] تعغیب حومر", "[0:00:03] کراسنا هورکای"]
     fixes = apply_answer(lines, {1: "تعقیب هومر", 2: "کراسناهورکای"})
+    raw = tmp_path / "a - متن خام.txt"; raw.write_text("\n".join(lines) + "\n", "utf-8")
     v = ReviewView(I18n("fa")); v.load(str(raw), lines, fixes, "fa"); v.set_use_fix(2, False); v.save()
     assert (tmp_path / "a - متن اصلاح‌شده.txt").read_text("utf-8") == "[0:00:01] تعقیب هومر\n[0:00:03] کراسنا هورکای\n"
 def test_review_too_different_unticked(qtbot): ... fixes with too_different → checkbox unchecked by default
@@ -709,7 +727,7 @@ def test_review_summary_counts(qtbot): "1 lines fixed" style counts via tr with 
 ```
 
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
-- [ ] **Step 5: Manual end-to-end.** Transcribe the 60 s clip, Prepare for ChatGPT, copy part 1 into a real chat (owner does this), paste the answer back, review highlights, untick one fix, Save → corrected file next to raw; reopen app → recent item shows ✔ and opens the result.
+- [ ] **Step 5: 👤 Owner checkpoint.** Transcribe the 60 s clip, Prepare for ChatGPT, copy part 1 into a real chat (owner does this), paste the answer back, review highlights, untick one fix, Save → corrected file next to raw; reopen app → recent item shows ✔ and opens the result.
 - [ ] **Step 6: Commit** — `git commit -m "Add export-for-AI, paste-back review and saving corrected transcript"`
 
 ---
@@ -721,6 +739,6 @@ def test_review_summary_counts(qtbot): "1 lines fixed" style counts via tr with 
 
 - [ ] **Step 1:** Update README as above (English, matching the existing tone and structure).
 - [ ] **Step 2: Full test run** `venv/bin/python -m pytest -v` — Expected: all pass, no warnings about leaked processes/threads.
-- [ ] **Step 3: Fresh-machine simulation.** `git clone . /tmp/…/bt-clone && cd /tmp/…/bt-clone && ./setup.sh && BT_DATA_DIR=/tmp/…/bt-data2 ./run-gui.sh` — setup from zero (no reuse option offered, since the clone has no `models/`), transcribe a real ~90-minute recording end to end, confirm time is in the CLI's range (~20–25 min) and the CLI `./run.sh` in the clone still works.
-- [ ] **Step 4: Persian UI pass.** Switch to فا: every screen mirrored, no English leftovers, numbers in Persian digits, transcript views RTL.
+- [ ] **Step 3: 👤 Owner checkpoint — fresh-machine simulation (owner runs it in a normal terminal; sandboxes kill sustained GPU compute).** `git clone . <scratch>/bt-clone && cd <scratch>/bt-clone && ./setup.sh && BT_DATA_DIR=<scratch>/bt-data2 ./run-gui.sh` — setup from zero (no reuse option offered, since the clone has no `models/`), transcribe a real ~90-minute recording end to end, confirm time is in the CLI's range (~20–25 min) and the CLI `./run.sh` in the clone still works.
+- [ ] **Step 4: 👤 Owner checkpoint — Persian UI pass.** Switch to فا: every screen mirrored, no English leftovers, numbers in Persian digits, transcript views RTL.
 - [ ] **Step 5: Commit** — `git commit -m "Document the desktop app preview"`
