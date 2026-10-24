@@ -1,21 +1,32 @@
 """First-run setup: welcome → downloading → ready, with friendly errors (spec §4.1)."""
 import dataclasses
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QProgressBar, QStackedLayout, QVBoxLayout,
                                QWidget)
 
-from .. import paths
+from .. import downloads, paths
 from ..i18n import fmt_bytes, fmt_duration, fmt_number
 from ..llm_catalog import MODELS, choose_llm
 from ..settings import Settings
 from ..setup_runner import ITEMS, LLM_RUNTIME_ESTIMATE, MODEL_ESTIMATE, SetupProgress, make_plan
 from ..syscheck import detect_system, find_existing_model, is_nvidia, source_checkout_dir
+from . import downloads_dialog
 from .widgets import ProgressRow, body_label, primary_button, secondary_button, title_label
 
 ASSUMED_SPEED = 4_000_000   # bytes/s, for the welcome screen's time estimate
 STATES = ("welcome", "downloading", "ready", "error")
+ERROR_STYLE = "color: #c0392b;"
+
+
+def _nearest_existing(path: Path) -> Path:
+    """The folder itself, or its closest parent that exists (free space is measured there)."""
+    path = Path(path)
+    while not path.exists() and path.parent != path:
+        path = path.parent
+    return path
 
 
 class SetupView(QWidget):
@@ -29,6 +40,8 @@ class SetupView(QWidget):
         self.error_kind = None
         self.result: Settings | None = None
         self.paused = False
+        self.downloads_target: Path = paths.data_dir_path()
+        self.location_reason: str | None = None     # "c_full": the suggestion moved off the full drive
 
         self.stack = QStackedLayout(self)
         self.pages = {}
@@ -66,6 +79,22 @@ class SetupView(QWidget):
             l.setObjectName(name)
             l.setWordWrap(True)
             lay.addWidget(l)
+        loc = QHBoxLayout()
+        self.location_line = QLabel()
+        self.location_line.setObjectName("location_line")
+        self.location_line.setWordWrap(True)
+        loc.addWidget(self.location_line, 1)
+        self.change_button = secondary_button()
+        self.change_button.clicked.connect(self._change_location)
+        loc.addWidget(self.change_button)
+        lay.addLayout(loc)
+        self.location_note, self.location_problem = body_label(), body_label()
+        self.location_note.setObjectName("location_note")
+        self.location_problem.setObjectName("location_problem")
+        self.location_problem.setStyleSheet(ERROR_STYLE)
+        self.location_problem.hide()
+        lay.addWidget(self.location_note)
+        lay.addWidget(self.location_problem)
         self.reuse_box = QCheckBox()
         self.reuse_box.setChecked(True)
         self.reuse_box.toggled.connect(self._update_welcome)
@@ -163,7 +192,12 @@ class SetupView(QWidget):
 
     def refresh(self) -> None:
         """Check the computer again and show the welcome screen."""
-        self.info = detect_system(paths.data_dir())
+        self.location_problem.hide()
+        if self.settings.downloads_dir:     # a repair run: stay where the downloads already are
+            self.downloads_target, self.location_reason = Path(self.settings.downloads_dir), None
+            self.info = detect_system(_nearest_existing(self.downloads_target))
+        else:
+            self.info = detect_system(paths.data_dir())
         root = source_checkout_dir()
         model = make_plan(self.info, None).whisper_model
         self.existing = find_existing_model([root / "models"], model) if root else None
@@ -172,6 +206,11 @@ class SetupView(QWidget):
         # otherwise Start would be disabled until the person thinks of unticking it.
         recommended = choose_llm(self.info)[1]
         reuse = self.existing if self.reuse_box.isChecked() else None
+        if not self.settings.downloads_dir:
+            needed = make_plan(self.info, reuse, include_llm=recommended).needed_bytes
+            self.downloads_target, self.location_reason = downloads.suggest_default(needed)
+            if self.location_reason is not None:     # another drive: its free space is what counts
+                self.info = detect_system(_nearest_existing(self.downloads_target))
         fits = self.info.free_bytes >= make_plan(self.info, reuse, include_llm=True).needed_bytes
         self.llm_box.blockSignals(True)
         self.llm_box.setChecked(recommended and fits)
@@ -201,13 +240,35 @@ class SetupView(QWidget):
         key = "setup.check.space" if enough else "setup.check.space_low"
         self.space_line.setText("💾 " + tr(key, needed=fmt_bytes(plan.needed_bytes, lang),
                                            free=fmt_bytes(self.info.free_bytes, lang)))
-        self.space_line.setStyleSheet("" if enough else "color: #c0392b;")
+        self.space_line.setStyleSheet("" if enough else ERROR_STYLE)
+        self.location_line.setText("📁 " + tr("setup.location", path=str(self.downloads_target),
+                                             free=fmt_bytes(self.info.free_bytes, lang)))
+        self.location_note.setVisible(self.location_reason == "c_full")
         self.start_button.setEnabled(enough)
         self.reuse_box.setText(tr("setup.reuse_existing", size=fmt_bytes(MODEL_ESTIMATE[plan.whisper_model], lang)))
         llm_size = MODELS[plan.llm_model].size + LLM_RUNTIME_ESTIMATE
         self.llm_note.setText(tr("setup.llm_note", size=fmt_bytes(llm_size, lang)))
 
+    def _change_location(self) -> None:
+        picked = downloads_dialog.pick_folder(self, self.downloads_target)
+        if picked is None:
+            return
+        target = downloads.choose_target(picked)
+        if not downloads.writable(target):
+            self.location_problem.show()
+            return
+        self.location_problem.hide()
+        self.downloads_target, self.location_reason = target, None
+        self.info = detect_system(_nearest_existing(target))
+        self._update_welcome()
+
     def start(self) -> None:
+        try:
+            downloads.set_downloads_dir(self.settings, self.downloads_target)    # before anything downloads
+        except OSError:     # the drive went away since it was picked
+            self.location_problem.show()
+            self._show("welcome")
+            return
         self.plan = self._current_plan()
         self.paused = False
         self.error_kind = None
@@ -313,6 +374,9 @@ class SetupView(QWidget):
         self.start_button.setText(tr("setup.start"))
         self.llm_box.setText(tr("setup.llm_box"))
         self.llm_weak.setText(tr("setup.llm_weak"))
+        self.change_button.setText(tr("setup.location.change"))
+        self.location_note.setText(tr("setup.location.c_full"))
+        self.location_problem.setText(tr("setup.location.unwritable"))
         self.dl_title.setText(tr("setup.downloading.title"))
         self.resume_note.setText(tr("setup.resume_note"))
         self.overall_label.setText(tr("setup.overall"))

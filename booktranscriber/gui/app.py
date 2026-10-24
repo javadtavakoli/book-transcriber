@@ -42,4 +42,5 @@ def main(argv=None) -> int:
     i18n = I18n(initial_language(settings.ui_language, QLocale.system().name()))
     w = MainWindow(i18n, settings)
     w.show()
+    w.check_downloads_folder()
     return app.exec()

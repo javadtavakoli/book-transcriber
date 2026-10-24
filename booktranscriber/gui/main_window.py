@@ -1,14 +1,17 @@
 """Main window: one page at a time (setup, home, flow, export, local, review), language toggle, close guard."""
 import os
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox,
                                QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
-from .. import paths
+from .. import downloads, paths
 from ..i18n import I18n
 from ..llm_server import reap_stale
 from ..settings import Settings, save_settings
+from . import downloads_dialog
+from .downloads_dialog import DownloadsDialog
 from .runners import LocalFixRunner, SetupRunner, TranscribeRunner
 from .export_view import ExportView
 from .flow_view import FlowView
@@ -48,6 +51,8 @@ class MainWindow(QMainWindow):
         menu = QMenu(self.settings_button)
         self.repair_action = menu.addAction("")
         self.repair_action.triggered.connect(self.open_repair)
+        self.downloads_action = menu.addAction("")
+        self.downloads_action.triggered.connect(self.open_downloads)
         self.settings_button.setMenu(menu)
         top.addWidget(self.settings_button)
         self.lang_button = QToolButton()
@@ -118,6 +123,40 @@ class MainWindow(QMainWindow):
         self.setup_view.refresh()
         self.show_page("setup")
 
+    def open_downloads(self) -> None:
+        if self.busy():
+            downloads_dialog.show_message(self, self.i18n.tr("busy.finish_first"))
+            return
+        # self.settings, the object every page holds: a move updates it in place, so no page
+        # can later save an old copy that points at the deleted files.
+        dlg = DownloadsDialog(self.i18n, self.settings, self, before_move=self._free_graphics_card)
+        dlg.repair_needed.connect(self.open_repair)
+        downloads_dialog.run_dialog(dlg)
+
+    def check_downloads_folder(self) -> None:
+        """At start: a downloads folder on a drive that isn't plugged in. Try again, or pick another."""
+        if not (self.settings.setup_done and self.settings.downloads_dir):
+            return
+        while not Path(self.settings.downloads_dir).is_dir():
+            answer = downloads_dialog.ask_missing(self, self.i18n, Path(self.settings.downloads_dir))
+            if answer == "retry":
+                continue
+            if answer != "choose":
+                return
+            picked = downloads_dialog.pick_folder(self, Path.home())
+            if picked is None:
+                continue
+            target = downloads.choose_target(picked)
+            try:
+                if not downloads.writable(target):
+                    raise OSError
+                downloads.set_downloads_dir(self.settings, target)
+            except OSError:
+                downloads_dialog.show_message(self, self.i18n.tr("setup.location.unwritable"))
+                continue
+            self.open_repair()      # the new folder is empty: setup downloads what is missing
+            return
+
     def _on_setup_completed(self, new: Settings) -> None:
         for f, v in vars(new).items():
             setattr(self.settings, f, v)
@@ -180,6 +219,7 @@ class MainWindow(QMainWindow):
         self.lang_button.setText(self.i18n.tr("lang.switch"))
         self.settings_button.setToolTip(self.i18n.tr("settings.menu"))
         self.repair_action.setText(self.i18n.tr("settings.repair"))
+        self.downloads_action.setText(self.i18n.tr("settings.downloads"))
         for page in self.pages.values():
             if hasattr(page, "retranslate"):
                 page.retranslate()

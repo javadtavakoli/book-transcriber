@@ -435,7 +435,7 @@ class FlowView(QWidget):
     def _llm_choice(self) -> tuple[str, str]:
         """(model key, backend) for this computer; checked once, since it asks the graphics card."""
         if self._llm_pick is None:
-            info = detect_system(paths.data_dir())
+            info = detect_system(paths.downloads_dir())     # the helper downloads there
             model, self._llm_recommended = choose_llm(info)
             self._llm_pick = (model, choose_backend(info))
         return self._llm_pick
