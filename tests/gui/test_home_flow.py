@@ -249,7 +249,7 @@ def test_result_offers_choices_and_export(qtbot, flow):
     out = Path(runner.last_job.out)
     out.write_text("سلام\n", "utf-8")
     runner.finished.emit(str(out), 1)
-    assert not v.local_button.isEnabled() and v.export_button.isEnabled()
+    assert v.local_button.isEnabled() and v.export_button.isEnabled()
     with qtbot.waitSignal(v.export_requested) as blocker:
         qtbot.mouseClick(v.export_button, Qt.LeftButton)
     assert blocker.args == [str(out), ["هومر"], "fa"]

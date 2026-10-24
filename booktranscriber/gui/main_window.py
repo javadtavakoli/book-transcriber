@@ -1,4 +1,4 @@
-"""Main window: one page at a time (setup, home, flow, export, review), language toggle, close guard."""
+"""Main window: one page at a time (setup, home, flow, export, local, review), language toggle, close guard."""
 import os
 
 from PySide6.QtCore import Qt
@@ -8,14 +8,15 @@ from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow, Q
 from .. import paths
 from ..i18n import I18n
 from ..settings import Settings, save_settings
-from .runners import SetupRunner, TranscribeRunner
+from .runners import LocalFixRunner, SetupRunner, TranscribeRunner
 from .export_view import ExportView
 from .flow_view import FlowView
 from .home_view import HomeView
+from .local_view import LocalView
 from .review_view import ReviewView
 from .setup_view import SetupView
 
-PAGES = ("setup", "home", "flow", "export", "review")
+PAGES = ("setup", "home", "flow", "export", "local", "review")
 
 
 def model_ready(settings: Settings) -> bool:
@@ -29,6 +30,8 @@ class MainWindow(QMainWindow):
         self.i18n, self.settings = i18n, settings
         self.transcriber = TranscribeRunner(self)
         self.setup_runner = SetupRunner(self)
+        self.local_runner = LocalFixRunner(self)
+        self.review_back = "export"
         self.resize(900, 680)
 
         central = QWidget()
@@ -61,20 +64,27 @@ class MainWindow(QMainWindow):
         self.setup_view.completed.connect(self._on_setup_completed)
         self.set_page_widget("setup", self.setup_view)
         self.home_view = HomeView(i18n, settings)
-        self.flow_view = FlowView(i18n, settings, self.transcriber)
+        self.flow_view = FlowView(i18n, settings, self.transcriber, before_transcribe=self.local_runner.stop_server)
         self.home_view.audio_selected.connect(self._open_audio)
         self.home_view.recent_opened.connect(self._open_recent)
         self.flow_view.back_home.connect(self._go_home)
         self.set_page_widget("home", self.home_view)
         self.set_page_widget("flow", self.flow_view)
         self.export_view = ExportView(i18n)
+        self.local_view = LocalView(i18n, settings, self.local_runner)
         self.review_view = ReviewView(i18n)
         self.flow_view.export_requested.connect(self._open_export)
+        self.flow_view.local_requested.connect(self._open_local)
         self.export_view.back.connect(lambda: self.show_page("flow"))
         self.export_view.review_ready.connect(self._open_review)
-        self.review_view.back.connect(lambda: self.show_page("export"))
+        self.local_view.back.connect(lambda: self.show_page("flow"))
+        self.local_view.review_ready.connect(self._open_local_review)
+        self.local_view.export_instead.connect(
+            lambda: self._open_export(self.local_view.raw_path, self.local_view.names, self.local_view.language))
+        self.review_view.back.connect(lambda: self.show_page(self.review_back))
         self.review_view.saved.connect(lambda path: self.home_view.refresh_recents())
         self.set_page_widget("export", self.export_view)
+        self.set_page_widget("local", self.local_view)
         self.set_page_widget("review", self.review_view)
 
         i18n.language_changed.connect(self._on_language)
@@ -102,6 +112,7 @@ class MainWindow(QMainWindow):
     def open_repair(self) -> None:
         if self.busy():
             return
+        self.local_runner.stop_server()     # setup's test runs the transcriber on the graphics card
         self.setup_view.settings = self.settings
         self.setup_view.refresh()
         self.show_page("setup")
@@ -127,6 +138,17 @@ class MainWindow(QMainWindow):
     def _open_review(self, fixes) -> None:
         ev = self.export_view
         self.review_view.load(ev.raw_path, ev.lines, fixes, ev.language)
+        self.review_back = "export"
+        self.show_page("review")
+
+    def _open_local(self, raw_path: str, names: list, language: str) -> None:
+        self.local_view.start(raw_path, names, language)
+        self.show_page("local")
+
+    def _open_local_review(self, fixes) -> None:
+        lv = self.local_view
+        self.review_view.load(lv.raw_path, lv.lines, fixes, lv.language, local=True)
+        self.review_back = "flow"
         self.show_page("review")
 
     def _go_home(self) -> None:
@@ -134,7 +156,8 @@ class MainWindow(QMainWindow):
         self.show_page("home")
 
     def busy(self) -> bool:
-        return self.transcriber.is_running() or self.setup_runner.is_running()
+        return (self.transcriber.is_running() or self.setup_runner.is_running()
+                or self.local_runner.is_running() or self.flow_view.llm_download.is_running())
 
     def save_settings(self) -> None:
         save_settings(self.settings, paths.settings_file())
@@ -171,4 +194,6 @@ class MainWindow(QMainWindow):
         self.hide()     # disappear at once; stopping a download can take a few seconds
         self.transcriber.cancel()
         self.setup_runner.stop_and_wait()
+        self.flow_view.llm_download.stop_and_wait()
+        self.local_runner.stop_server()
         event.accept()

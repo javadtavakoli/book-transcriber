@@ -1,4 +1,4 @@
-"""Bridges from Qt to the long-running work: the worker process and first-run setup."""
+"""Bridges from Qt to the long-running work: the worker process, first-run setup and the local AI helper."""
 import os
 import threading
 from dataclasses import dataclass
@@ -7,7 +7,11 @@ import shiboken6
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, Signal
 
 from .. import paths
+from ..downloader import DownloadCancelled
+from ..llm_server import LlmStartError, start_with_fallback
+from ..local_fix import fix_transcript
 from ..protocol import decode
+from ..settings import save_settings
 from ..worker import worker_command, worker_env
 
 STDERR_TAIL = 40
@@ -166,14 +170,18 @@ class _SetupThread(QThread):
     done = Signal(object)
     error = Signal(object)      # SetupError
 
-    def __init__(self, plan, settings, cancel):
+    def __init__(self, plan, settings, cancel, llm=None):
         super().__init__()
         self.plan, self.settings, self.cancel = plan, settings, cancel
+        self.llm = llm      # (model key, backend): only the AI helper's downloads
 
     def run(self):
-        from ..setup_runner import SetupError, run_setup
+        from ..setup_runner import SetupError, run_llm_setup, run_setup
         try:
-            self.done.emit(run_setup(self.plan, self.settings, self.progress.emit, self.cancel))
+            if self.llm is not None:
+                self.done.emit(run_llm_setup(*self.llm, self.settings, self.progress.emit, self.cancel))
+            else:
+                self.done.emit(run_setup(self.plan, self.settings, self.progress.emit, self.cancel))
         except SetupError as e:
             self.error.emit(e)
         except Exception:
@@ -197,9 +205,19 @@ class SetupRunner(QObject):
         return self._thread is not None and self._thread.isRunning()
 
     def start(self, plan, settings) -> None:
+        self._start(_SetupThread(plan, settings, self._new_cancel()))
+
+    def start_llm(self, model_key: str, backend: str, settings) -> None:
+        """Download just the local AI helper (for people who skipped it during setup)."""
+        self._start(_SetupThread(None, settings, self._new_cancel(), llm=(model_key, backend)))
+
+    def _new_cancel(self) -> threading.Event:
+        self.stop_and_wait()    # never drop a thread that is still running
         self._cancel = threading.Event()
+        return self._cancel
+
+    def _start(self, t: _SetupThread) -> None:
         self.last_error = None
-        t = _SetupThread(plan, settings, self._cancel)
         t.progress.connect(self.progress)
         t.done.connect(self.finished)
         t.error.connect(self._on_error)
@@ -219,3 +237,138 @@ class SetupRunner(QObject):
         self._cancel.set()
         if self._thread is not None:
             self._thread.wait()
+
+
+class _LocalFixThread(QThread):
+    load_progress = Signal(float, object)
+    fallback = Signal()
+    loaded = Signal()
+    fix_progress = Signal(int, int)
+    done = Signal(object)
+    error = Signal(str)
+
+    def __init__(self, runner, lines, names, settings, cancel):
+        super().__init__()
+        self.runner, self.lines, self.names, self.settings, self.cancel = runner, lines, names, settings, cancel
+
+    def run(self):
+        r = self.runner
+        try:
+            server = r._server
+            if server is None or not server.is_ready():
+                if server is not None:
+                    server.stop()       # it died since the last job
+                r._server = None
+                server = start_with_fallback(self.settings, self.load_progress.emit, self.cancel,
+                                             self.fallback.emit)
+                r._server = server      # set before fixing, so stop_server() can reach it
+                self.loaded.emit()
+            fixes = fix_transcript(self.lines, self.names, server.port, self.fix_progress.emit, self.cancel)
+            if self.cancel.is_set():    # stopped during the last part: the answers may be cut short
+                raise DownloadCancelled()
+            self.done.emit(fixes)
+        except DownloadCancelled:
+            self.error.emit("cancelled")
+        except LlmStartError as e:
+            _write_log("llm.log", f"{e.kind}\n{e.detail}")
+            self.error.emit(e.kind)
+        except Exception:
+            import traceback
+            _write_log("llm.log", traceback.format_exc())
+            self.error.emit("unknown")
+
+
+def _write_log(name: str, text: str) -> None:
+    try:
+        (paths.logs_dir() / name).write_text(text, "utf-8")
+    except OSError:
+        pass
+
+
+class LocalFixRunner(QObject):
+    """Loads the local AI helper (once per session) and fixes a transcript with it, off the GUI thread."""
+    load_progress = Signal(float, object)   # fraction, seconds left or None
+    fallback = Signal()
+    fix_progress = Signal(int, int)
+    finished = Signal(object)               # list[LineFix]
+    failed = Signal(str)                    # memory, crash, timeout, missing, cancelled, unknown
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._thread: _LocalFixThread | None = None
+        self._cancel = threading.Event()
+        self._server = None     # the LlamaServer, kept loaded between jobs
+        self._settings = None
+        self._live = False      # the current job's results are still wanted
+
+    def is_running(self) -> bool:
+        return self._live and self._thread is not None and self._thread.isRunning()
+
+    def server_loaded(self) -> bool:
+        s = self._server
+        return s is not None and s.is_ready()
+
+    def start(self, raw_lines: list[str], names: list[str], settings) -> None:
+        if self._thread is not None:
+            self._cancel.set()
+            self._thread.wait()     # a cancelled job finishes its current part first
+        self._cancel = threading.Event()
+        self._settings, self._live = settings, True
+        t = _LocalFixThread(self, list(raw_lines), list(names), settings, self._cancel)
+        # Each handler checks the signal comes from the current job, so a stopped job's late
+        # results never reach the screen.
+        t.load_progress.connect(self._on_load_progress)
+        t.fallback.connect(self._on_fallback)
+        t.loaded.connect(self._on_loaded)
+        t.fix_progress.connect(self._on_fix_progress)
+        t.done.connect(self._on_done)
+        t.error.connect(self._on_error)
+        self._thread = t
+        t.start()
+
+    def cancel(self) -> None:
+        """Stop the current job; the helper stays loaded for the next one."""
+        self._live = False
+        self._cancel.set()
+
+    def stop_server(self) -> None:
+        """Stop the job and the helper, freeing the graphics memory. Safe whether idle, loading or fixing."""
+        self.cancel()
+        if self._server is not None:
+            self._server.stop()     # an answer being waited for fails at once
+        if self._thread is not None:
+            self._thread.wait()     # loading and fixing both check the cancel flag
+        # Loading may have finished just before the cancel arrived.
+        if self._server is not None:
+            self._server.stop()
+        self._server = None
+
+    def _current(self) -> bool:
+        return self._live and self.sender() is self._thread
+
+    def _on_load_progress(self, fraction: float, eta) -> None:
+        if self._current():
+            self.load_progress.emit(fraction, eta)
+
+    def _on_fallback(self) -> None:
+        if self._current():
+            self.fallback.emit()
+
+    def _on_loaded(self) -> None:
+        # How long loading took is remembered, so next time the bar can show the time left.
+        if self.sender() is self._thread and self._settings is not None:
+            save_settings(self._settings, paths.settings_file())
+
+    def _on_fix_progress(self, done: int, total: int) -> None:
+        if self._current():
+            self.fix_progress.emit(done, total)
+
+    def _on_done(self, fixes) -> None:
+        if self._current():
+            self._live = False
+            self.finished.emit(fixes)
+
+    def _on_error(self, kind: str) -> None:
+        if self._current():
+            self._live = False
+            self.failed.emit(kind)

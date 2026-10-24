@@ -1,0 +1,380 @@
+import dataclasses
+import os
+from pathlib import Path
+
+import pytest
+from PySide6.QtCore import Qt
+
+from booktranscriber import llm_server, paths, setup_runner
+from booktranscriber.fixexport import LineFix
+from booktranscriber.gui import flow_view, setup_view
+from booktranscriber.gui.flow_view import FlowView
+from booktranscriber.gui.local_view import LocalView
+from booktranscriber.gui.main_window import MainWindow
+from booktranscriber.gui.review_view import ReviewView
+from booktranscriber.gui.runners import LocalFixRunner
+from booktranscriber.gui.setup_view import SetupView
+from booktranscriber.i18n import I18n
+from booktranscriber.recents import RecentItem, add_recent
+from booktranscriber.settings import Settings, load_settings
+from booktranscriber.setup_runner import SetupError, SetupProgress
+from booktranscriber.syscheck import GpuInfo, SystemInfo
+
+from .test_home_flow import FakeRunner as FakeTranscriber
+from .test_setup_view import FakeRunner as FakeSetupRunner
+
+OK = SystemInfo("linux", GpuInfo("NVIDIA GeForce RTX 4050 Laptop GPU", 6141), 120 * 10**9)
+WEAK = SystemInfo("linux", None, 120 * 10**9)
+LINES = ["سلام به همه", "این کتاب انقاشی داره", "", "آره خب"]
+
+
+@pytest.fixture
+def binaries(monkeypatch, fake_llama):
+    """binaries({"vulkan": "crash", "cpu": "ok"}): which fake each llama-server build is."""
+    def use(modes):
+        built = {b: fake_llama(m) for b, m in modes.items()}
+        monkeypatch.setattr(llm_server, "server_binary", lambda backend: built.get(backend))
+    return use
+
+
+@pytest.fixture
+def model_file(tmp_path):
+    m = tmp_path / "model.gguf"
+    m.write_bytes(b"gguf")
+    return m
+
+
+@pytest.fixture
+def settings(model_file, tmp_path):
+    (tmp_path / "model.bin").write_bytes(b"x")
+    return Settings(setup_done=True, whisper_model_path=str(tmp_path), llm_model="gemma-4-e4b",
+                    llm_model_path=str(model_file), llm_backend="vulkan")
+
+
+@pytest.fixture
+def runner(fake_llama):
+    r = LocalFixRunner()
+    yield r
+    r.stop_server()
+
+
+@pytest.fixture
+def raw_file(tmp_path):
+    raw = tmp_path / "s12 - متن خام.txt"
+    raw.write_text("\n".join(LINES) + "\n", "utf-8")
+    return raw
+
+
+@pytest.fixture
+def local(qtbot, runner, settings):
+    v = LocalView(I18n("en"), settings, runner)
+    qtbot.addWidget(v)
+    return v
+
+
+@pytest.fixture
+def window(qtbot, settings, fake_llama, monkeypatch):
+    monkeypatch.setattr(setup_view, "detect_system", lambda d: OK)
+    w = MainWindow(I18n("en"), settings)
+    qtbot.addWidget(w)
+    yield w
+    w.local_runner.stop_server()
+    w.flow_view.llm_download.stop_and_wait()
+
+
+def open_recent(w, raw_file):
+    item = RecentItem(str(raw_file.with_name("s12.m4a")), str(raw_file), None, "t")
+    add_recent(paths.recents_file(), item)
+    w.home_view.recent_opened.emit(item)
+    return item
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+# --- setup --------------------------------------------------------------------------
+def test_setup_llm_checkbox_follows_recommendation(qtbot, monkeypatch):
+    monkeypatch.setattr(setup_view, "find_existing_model", lambda dirs, model: None)
+    monkeypatch.setattr(setup_view, "detect_system", lambda d: OK)
+    runner = FakeSetupRunner()
+    v = SetupView(I18n("en"), Settings(), runner)
+    qtbot.addWidget(v)
+    assert v.llm_box.isChecked() and v.llm_box.text() == "Also download the AI helper (recommended)"
+    assert v.llm_weak.isHidden() and not v.llm_note.isHidden()
+    with_llm = v.space_line.text()
+    v.llm_box.setChecked(False)
+    assert v.space_line.text() != with_llm          # the helper's size leaves the estimate
+    v.llm_box.setChecked(True)
+    v.start()
+    assert runner.starts[-1][0].include_llm and not v.rows["llm"].isHidden()
+
+    monkeypatch.setattr(setup_view, "detect_system", lambda d: WEAK)
+    v.refresh()
+    assert not v.llm_box.isChecked() and not v.llm_weak.isHidden()
+    assert "may be slow" in v.llm_weak.text()
+    v.start()
+    assert not runner.starts[-1][0].include_llm and v.rows["llm"].isHidden()
+
+
+def test_setup_disk_error_offers_skip_ai_helper(qtbot, monkeypatch):
+    monkeypatch.setattr(setup_view, "find_existing_model", lambda dirs, model: None)
+    monkeypatch.setattr(setup_view, "detect_system", lambda d: OK)
+    runner = FakeSetupRunner()
+    v = SetupView(I18n("en"), Settings(), runner)
+    qtbot.addWidget(v)
+    v.start()
+    runner.last_error = SetupError("disk", needed=6 * 10**9, free=4 * 10**9, fits_without_llm=True)
+    runner.failed.emit("disk")
+    assert v.state() == "error" and not v.skip_llm_button.isHidden()
+    assert v.skip_llm_button.text() == "Skip AI helper"
+    qtbot.mouseClick(v.skip_llm_button, Qt.LeftButton)
+    assert not runner.starts[-1][0].include_llm and not v.llm_box.isChecked() and v.state() == "downloading"
+
+    runner.last_error = SetupError("disk", needed=6 * 10**9, free=10**8, fits_without_llm=False)
+    runner.failed.emit("disk")
+    assert v.skip_llm_button.isHidden()
+
+
+# --- the local fix panel ------------------------------------------------------------
+def test_local_view_fixes_and_emits_review(qtbot, local, binaries, raw_file):
+    binaries({"vulkan": "fix"})
+    local.start(str(raw_file), [], "fa")
+    assert local.state() == "loading" and local.title.text() == "Loading the AI helper…"
+    with qtbot.waitSignal(local.review_ready, timeout=20000) as blocker:
+        pass
+    fixes = blocker.args[0]
+    assert [f.proposed for f in fixes if f.reason == "fixed"] == ["این کتاب نقاشی داره"]
+    assert local.runner.server_loaded()
+
+
+def test_loading_bar_moves_and_shows_eta_second_time(qtbot, local, binaries, raw_file):
+    binaries({"vulkan": "slow"})
+    local.settings.llm_load_seconds = 60
+    local.start(str(raw_file), [], "fa")
+    qtbot.waitUntil(lambda: not local.eta_label.isHidden() and local.bar.value() > 0, timeout=10000)
+    assert "left" in local.eta_label.text()
+    with qtbot.waitSignal(local.review_ready, timeout=20000):
+        pass
+    # The real duration is remembered for next time.
+    saved = load_settings(paths.settings_file()).llm_load_seconds
+    assert saved is not None and 0 < saved < 60
+
+
+def test_first_load_shows_no_time_left(qtbot, local, binaries, raw_file):
+    binaries({"vulkan": "slow"})
+    local.start(str(raw_file), [], "fa")
+    qtbot.waitUntil(lambda: local.bar.value() > 0, timeout=10000)
+    assert local.eta_label.isHidden()
+    with qtbot.waitSignal(local.review_ready, timeout=20000):
+        pass
+
+
+def test_fixing_shows_parts(qtbot, local, binaries, raw_file):
+    binaries({"vulkan": "ok"})
+    local.start(str(raw_file), [], "fa")
+    with qtbot.waitSignal(local.review_ready, timeout=20000):
+        pass
+    # A second fix reuses the loaded helper: straight to fixing, no loading.
+    local.start(str(raw_file), [], "fa")
+    assert local.state() == "fixing" and local.status.text() == "Fixing… part 1 of 1"
+    with qtbot.waitSignal(local.review_ready, timeout=20000):
+        pass
+
+
+def test_fallback_note_shown(qtbot, local, binaries, raw_file):
+    binaries({"vulkan": "crash", "cpu": "ok"})
+    local.start(str(raw_file), [], "fa")
+    with qtbot.waitSignal(local.review_ready, timeout=20000):
+        pass
+    assert not local.fallback_note.isHidden() and "processor" in local.fallback_note.text()
+
+
+def test_memory_error_offers_export(qtbot, local, binaries, raw_file):
+    binaries({"vulkan": "oom", "cpu": "ok"})
+    local.start(str(raw_file), [], "fa")
+    qtbot.waitUntil(lambda: local.state() == "error", timeout=20000)
+    assert not local.export_button.isHidden() and local.retry_button.isHidden()
+    assert local.export_button.text() == "Use ChatGPT / Claude / Gemini instead"
+    with qtbot.waitSignal(local.export_instead):
+        qtbot.mouseClick(local.export_button, Qt.LeftButton)
+
+
+def test_other_errors_offer_try_again(qtbot, local, binaries, raw_file):
+    binaries({"vulkan": "crash", "cpu": "crash"})
+    local.start(str(raw_file), [], "fa")
+    qtbot.waitUntil(lambda: local.state() == "error", timeout=20000)
+    assert local.export_button.isHidden() and not local.retry_button.isHidden()
+    binaries({"vulkan": "ok"})
+    qtbot.mouseClick(local.retry_button, Qt.LeftButton)
+    assert local.state() == "loading"
+    with qtbot.waitSignal(local.review_ready, timeout=20000):
+        pass
+
+
+def test_cancel_while_loading_goes_back(qtbot, local, binaries, raw_file):
+    binaries({"vulkan": "hang"})
+    local.start(str(raw_file), [], "fa")
+    qtbot.waitUntil(lambda: local.bar.value() > 0, timeout=10000)
+    with qtbot.waitSignal(local.back):
+        qtbot.mouseClick(local.cancel_button, Qt.LeftButton)
+    assert not local.runner.is_running()
+    local.runner.stop_server()
+    assert not local.runner.server_loaded()
+
+
+def test_runner_drops_results_of_a_stopped_job(qtbot, runner, binaries, settings):
+    binaries({"vulkan": "ok"})
+    got = []
+    runner.finished.connect(got.append)
+    with qtbot.waitSignal(runner.finished, timeout=20000):
+        runner.start(LINES, [], settings)
+    runner.start(LINES, [], settings)
+    runner.stop_server()
+    qtbot.wait(300)
+    assert len(got) == 1 and not runner.server_loaded() and not runner.is_running()
+
+
+# --- the window -----------------------------------------------------------------------
+def test_local_button_opens_loading_then_review(qtbot, window, binaries, raw_file):
+    binaries({"vulkan": "fix"})
+    w = window
+    open_recent(w, raw_file)
+    assert w.flow_view.local_button.isEnabled()
+    assert "check each change" in w.flow_view.local_button.text()
+    w.flow_view.local_button.click()
+    assert w.current_page() == "local" and w.local_view.state() == "loading"
+    assert w.busy()
+    qtbot.waitUntil(lambda: w.current_page() == "review", timeout=20000)
+    assert not w.review_view.local_banner.isHidden()
+    assert w.review_view.fixes[1].proposed == "این کتاب نقاشی داره"
+    w.review_view.save_button.click()
+    assert raw_file.with_name("s12 - متن اصلاح‌شده.txt").read_text("utf-8").splitlines()[1] == "این کتاب نقاشی داره"
+    w.review_view.back.emit()
+    assert w.current_page() == "flow"
+
+
+def test_memory_error_export_instead_opens_export(qtbot, window, binaries, raw_file):
+    binaries({"vulkan": "oom"})
+    w = window
+    open_recent(w, raw_file)
+    w.flow_view.local_button.click()
+    qtbot.waitUntil(lambda: w.local_view.state() == "error", timeout=20000)
+    w.local_view.export_button.click()
+    assert w.current_page() == "export" and w.export_view.lines == LINES
+
+
+def test_server_stopped_before_new_transcription(qtbot, window, binaries, raw_file, monkeypatch):
+    binaries({"vulkan": "ok"})
+    w = window
+    open_recent(w, raw_file)
+    w.flow_view.local_button.click()
+    qtbot.waitUntil(lambda: w.current_page() == "review", timeout=20000)
+    assert w.local_runner.server_loaded()
+    pid = w.local_runner._server.pid
+    seen = []
+    monkeypatch.setattr(w.transcriber, "start", lambda job: seen.append((alive(pid), w.local_runner.server_loaded())))
+    audio = raw_file.with_name("next.m4a")
+    audio.write_bytes(b"x")
+    w.home_view.handle_files([str(audio)])
+    w.flow_view.skip_button.click()
+    assert seen == [(False, False)]
+
+
+def test_retry_after_failure_also_stops_server(qtbot, settings):
+    calls = []
+    v = FlowView(I18n("en"), settings, FakeTranscriber(), before_transcribe=lambda: calls.append("stop"))
+    qtbot.addWidget(v)
+    audio = Path(settings.whisper_model_path) / "a.m4a"
+    audio.write_bytes(b"x")
+    v.begin(str(audio))
+    v.skip_button.click()
+    v.runner.failed.emit("unknown", "x")
+    v.problem_button.click()
+    assert calls == ["stop", "stop"] and len(v.runner.jobs) == 2
+
+
+def test_close_stops_server(qtbot, window, binaries, raw_file):
+    binaries({"vulkan": "ok"})
+    w = window
+    w.show()
+    open_recent(w, raw_file)
+    w.flow_view.local_button.click()
+    qtbot.waitUntil(lambda: w.current_page() == "review", timeout=20000)
+    pid = w.local_runner._server.pid
+    assert alive(pid) and not w.busy()
+    w.close()
+    assert not alive(pid) and not w.local_runner.server_loaded()
+
+
+def test_close_while_loading_stops_everything(qtbot, window, binaries, raw_file, monkeypatch):
+    binaries({"vulkan": "hang"})
+    w = window
+    w.show()
+    open_recent(w, raw_file)
+    w.flow_view.local_button.click()
+    qtbot.waitUntil(lambda: w.local_view.bar.value() > 0, timeout=10000)
+    assert w.busy()
+    monkeypatch.setattr(w, "confirm_quit", lambda: True)
+    w.close()
+    assert not w.local_runner.is_running() and not w.local_runner.server_loaded()
+    assert not list(llm_server._servers)
+
+
+# --- download later ---------------------------------------------------------------------
+def test_download_then_fix_when_missing(qtbot, settings, raw_file, monkeypatch, model_file):
+    monkeypatch.setattr(flow_view, "detect_system", lambda d: OK)
+    picked = []
+
+    def fake_llm_setup(model_key, backend, s, on_progress, cancel, **kw):
+        picked.append((model_key, backend))
+        on_progress(SetupProgress("llm", 1, 2, 1, 2, 1e6, 3))
+        return dataclasses.replace(s, llm_model=model_key, llm_backend=backend, llm_model_path=str(model_file))
+    monkeypatch.setattr(setup_runner, "run_llm_setup", fake_llm_setup)
+    settings.llm_model_path = None
+    v = FlowView(I18n("en"), settings, FakeTranscriber())
+    qtbot.addWidget(v)
+    v.show()
+    v.open_result(RecentItem(str(raw_file.with_name("s12.m4a")), str(raw_file), None, "t"), from_recents=True)
+    assert v.local_button.text().startswith("Download the AI helper (4.8 GB) and fix")
+    with qtbot.waitSignal(v.local_requested, timeout=10000) as blocker:
+        v.local_button.click()
+        assert not v.local_bar.isHidden() and not v.local_button.isEnabled()
+    assert blocker.args == [str(raw_file), [], "fa"]
+    assert picked == [("gemma-4-e4b", "vulkan")]
+    assert settings.llm_model_path == str(model_file) and v.local_bar.isHidden()
+    assert load_settings(paths.settings_file()).llm_model_path == str(model_file)
+    assert v.local_button.text().startswith("Fix it here (private)")
+    v.llm_download.stop_and_wait()
+
+
+def test_download_failure_lets_you_try_again(qtbot, settings, raw_file, monkeypatch):
+    monkeypatch.setattr(flow_view, "detect_system", lambda d: OK)
+
+    def failing(*a, **kw):
+        raise SetupError("network")
+    monkeypatch.setattr(setup_runner, "run_llm_setup", failing)
+    settings.llm_model_path = None
+    v = FlowView(I18n("en"), settings, FakeTranscriber())
+    qtbot.addWidget(v)
+    v.open_result(RecentItem(str(raw_file.with_name("s12.m4a")), str(raw_file), None, "t"), from_recents=True)
+    v.local_button.click()
+    qtbot.waitUntil(lambda: v.local_button.isEnabled(), timeout=10000)
+    assert not v.local_problem.isHidden() and v.local_bar.isHidden()
+    v.llm_download.stop_and_wait()
+
+
+# --- review -------------------------------------------------------------------------------
+def test_review_banner_for_local_route(qtbot, raw_file):
+    v = ReviewView(I18n("en"))
+    qtbot.addWidget(v)
+    fixes = [LineFix(1, "a", "b", True, "fixed")]
+    v.load(str(raw_file), ["a"], fixes, "fa", local=True)
+    assert not v.local_banner.isHidden()
+    assert v.local_banner.text() == "Made by the AI helper on your computer. Check each change."
+    v.load(str(raw_file), ["a"], fixes, "fa")
+    assert v.local_banner.isHidden()

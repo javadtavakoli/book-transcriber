@@ -42,6 +42,7 @@ class ReviewView(QWidget):
         self.i18n = i18n
         self.raw_path, self.lines, self.fixes, self.language = "", [], [], "fa"
         self.saved_path = None
+        self.local = False
 
         lay = QVBoxLayout(self)
         self.back_button = QPushButton(flat=True)
@@ -49,6 +50,12 @@ class ReviewView(QWidget):
         lay.addWidget(self.back_button, 0, Qt.AlignLeft)
         self.title = title_label()
         lay.addWidget(self.title)
+        # The local helper is a first pass that makes mistakes (spec §5.2): say so where the changes are checked.
+        self.local_banner = QLabel()
+        self.local_banner.setWordWrap(True)
+        self.local_banner.setStyleSheet("background: #fff6db; border-radius: 6px; padding: 8px;")
+        self.local_banner.hide()
+        lay.addWidget(self.local_banner)
         self.summary_label = body_label()
         lay.addWidget(self.summary_label)
         self.only_changed_box = QCheckBox()
@@ -82,8 +89,12 @@ class ReviewView(QWidget):
         lay.addLayout(row)
         self.retranslate()
 
-    def load(self, raw_path: str, lines: list[str], fixes: list[LineFix], language: str) -> None:
+    def load(self, raw_path: str, lines: list[str], fixes: list[LineFix], language: str,
+             local: bool = False) -> None:
         self.raw_path, self.lines, self.fixes, self.language = raw_path, lines, fixes, language
+        self.local = local
+        self.local_banner.setVisible(local)
+        self.back_button.setText(self.i18n.tr("review.back_result" if local else "review.back"))
         self.saved_path = None
         self.saved_label.clear()
         self.open_folder_button.hide()
@@ -162,8 +173,9 @@ class ReviewView(QWidget):
 
     def retranslate(self) -> None:
         tr = self.i18n.tr
-        self.back_button.setText(tr("review.back"))
+        self.back_button.setText(tr("review.back_result" if self.local else "review.back"))
         self.title.setText(tr("review.title"))
+        self.local_banner.setText(tr("review.local_banner"))
         self.only_changed_box.setText(tr("review.only_changed"))
         self.table.setHorizontalHeaderLabels([tr("review.col_n"), tr("review.col_original"),
                                               tr("review.col_corrected"), tr("review.col_use")])

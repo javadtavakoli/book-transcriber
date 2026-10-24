@@ -8,8 +8,9 @@ from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QProgressBar, QSt
 
 from .. import paths
 from ..i18n import fmt_bytes, fmt_duration, fmt_number
+from ..llm_catalog import MODELS, choose_llm
 from ..settings import Settings
-from ..setup_runner import ITEMS, MODEL_ESTIMATE, SetupProgress, make_plan
+from ..setup_runner import ITEMS, LLM_RUNTIME_ESTIMATE, MODEL_ESTIMATE, SetupProgress, make_plan
 from ..syscheck import detect_system, find_existing_model, source_checkout_dir
 from .widgets import ProgressRow, body_label, primary_button, secondary_button, title_label
 
@@ -68,6 +69,15 @@ class SetupView(QWidget):
         self.reuse_box.setChecked(True)
         self.reuse_box.toggled.connect(self._update_welcome)
         lay.addWidget(self.reuse_box)
+        self.llm_box = QCheckBox()
+        self.llm_box.toggled.connect(self._update_welcome)
+        lay.addWidget(self.llm_box)
+        self.llm_note, self.llm_weak = body_label(), body_label()
+        self.llm_note.setObjectName("llm_note")
+        self.llm_weak.setObjectName("llm_weak")
+        self.llm_weak.setStyleSheet("color: #b9770e;")
+        lay.addWidget(self.llm_note)
+        lay.addWidget(self.llm_weak)
         self.start_button = primary_button()
         self.start_button.clicked.connect(self.start)
         lay.addWidget(self.start_button, 0, Qt.AlignCenter)
@@ -134,9 +144,11 @@ class SetupView(QWidget):
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.logs_dir()))))
         self.cpu_button = secondary_button()
         self.cpu_button.clicked.connect(self._continue_on_cpu)
+        self.skip_llm_button = secondary_button()
+        self.skip_llm_button.clicked.connect(self._skip_llm)
         self.retry_button = primary_button()
         self.retry_button.clicked.connect(self._retry)
-        for b in (self.details_button, self.cpu_button, self.retry_button):
+        for b in (self.details_button, self.cpu_button, self.skip_llm_button, self.retry_button):
             buttons.addWidget(b)
         lay.addLayout(buttons)
         lay.addStretch(2)
@@ -155,12 +167,18 @@ class SetupView(QWidget):
         model = make_plan(self.info, None).whisper_model
         self.existing = find_existing_model([root / "models"], model) if root else None
         self.reuse_box.setVisible(self.existing is not None)
+        # Ticked by default only if this computer runs the helper well (spec §4.1).
+        recommended = choose_llm(self.info)[1]
+        self.llm_box.blockSignals(True)
+        self.llm_box.setChecked(recommended)
+        self.llm_box.blockSignals(False)
+        self.llm_weak.setVisible(not recommended)
         self._update_welcome()
         self._show("welcome")
 
     def _current_plan(self):
         reuse = self.existing if self.existing is not None and self.reuse_box.isChecked() else None
-        return make_plan(self.info, reuse)
+        return make_plan(self.info, reuse, include_llm=self.llm_box.isChecked())
 
     def _update_welcome(self) -> None:
         if self.info is None:
@@ -178,6 +196,8 @@ class SetupView(QWidget):
         self.space_line.setStyleSheet("" if enough else "color: #c0392b;")
         self.start_button.setEnabled(enough)
         self.reuse_box.setText(tr("setup.reuse_existing", size=fmt_bytes(MODEL_ESTIMATE[plan.whisper_model], lang)))
+        llm_size = MODELS[plan.llm_model].size + LLM_RUNTIME_ESTIMATE
+        self.llm_note.setText(tr("setup.llm_note", size=fmt_bytes(llm_size, lang)))
 
     def start(self) -> None:
         self.plan = self._current_plan()
@@ -186,6 +206,7 @@ class SetupView(QWidget):
         for item in ITEMS:
             self._set_row_waiting(item)
         self.rows["gpu"].setVisible(self.plan.include_gpu)
+        self.rows["llm"].setVisible(self.plan.include_llm)
         self.runner.start(self.plan, self.settings)
         self.retranslate()
         self._show("downloading")
@@ -201,6 +222,10 @@ class SetupView(QWidget):
             self.refresh()
         else:
             self.start()
+
+    def _skip_llm(self) -> None:
+        self.llm_box.setChecked(False)
+        self.start()
 
     def _continue_on_cpu(self) -> None:
         self.settings = dataclasses.replace(self.settings, device="cpu")
@@ -263,6 +288,11 @@ class SetupView(QWidget):
         self.retry_button.setText(tr("error.check_again" if kind == "disk" else "error.try_again"))
         self.cpu_button.setText(tr("error.use_cpu"))
         self.cpu_button.setVisible(kind == "gpu")
+        # Out of space, but enough without the optional helper: offer to leave it out.
+        self.skip_llm_button.setText(tr("error.skip_llm"))
+        self.skip_llm_button.setVisible(kind == "disk" and err is not None and err.kind == "disk"
+                                        and err.fits_without_llm and self.plan is not None
+                                        and self.plan.include_llm)
         self.details_button.setText(tr("error.details"))
         self.details_button.setVisible(kind == "test")
 
@@ -271,6 +301,8 @@ class SetupView(QWidget):
         self.welcome_title.setText(tr("setup.welcome.title"))
         self.welcome_body.setText(tr("setup.welcome.body"))
         self.start_button.setText(tr("setup.start"))
+        self.llm_box.setText(tr("setup.llm_box"))
+        self.llm_weak.setText(tr("setup.llm_weak"))
         self.dl_title.setText(tr("setup.downloading.title"))
         self.resume_note.setText(tr("setup.resume_note"))
         self.overall_label.setText(tr("setup.overall"))

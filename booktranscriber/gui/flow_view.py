@@ -11,11 +11,14 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, Q
 
 from .. import paths
 from ..engine import output_path
-from ..i18n import fmt_duration
+from ..i18n import fmt_bytes, fmt_duration
+from ..llm_catalog import MODELS, choose_backend, choose_llm
 from ..namelists import build_prompt, import_prompt_file, list_lists, load_list, parse_names, save_list
 from ..recents import RecentItem, add_recent
 from ..settings import save_settings
-from .runners import TranscribeJob
+from ..setup_runner import LLM_RUNTIME_ESTIMATE
+from ..syscheck import detect_system
+from .runners import SetupRunner, TranscribeJob
 from .widgets import body_label, primary_button, secondary_button, title_label
 
 STATES = ("names", "transcribing", "result")
@@ -45,10 +48,15 @@ class FlowView(QWidget):
     transcribed = Signal(object)
     back_home = Signal()
     export_requested = Signal(str, list, str)   # raw path, names, transcript language
+    local_requested = Signal(str, list, str)    # the same, for the local AI helper
 
-    def __init__(self, i18n, settings, runner, parent=None):
+    def __init__(self, i18n, settings, runner, before_transcribe=None, parent=None):
         super().__init__(parent)
         self.i18n, self.settings, self.runner = i18n, settings, runner
+        self.before_transcribe = before_transcribe   # frees the graphics card (stops the AI helper)
+        self.llm_download = SetupRunner(self)
+        self._llm_pick: tuple[str, str] | None = None
+        self._download_for = None
         self.audio = None
         self.job: TranscribeJob | None = None
         self.item: RecentItem | None = None
@@ -71,6 +79,9 @@ class FlowView(QWidget):
         runner.progress.connect(self._on_progress)
         runner.finished.connect(self._on_finished)
         runner.failed.connect(self._on_failed)
+        self.llm_download.progress.connect(self._on_llm_progress)
+        self.llm_download.finished.connect(self._on_llm_downloaded)
+        self.llm_download.failed.connect(self._on_llm_failed)
         self.retranslate()
 
     # --- names step -----------------------------------------------------------
@@ -228,6 +239,9 @@ class FlowView(QWidget):
         self._run(self.job)
 
     def _run(self, job: TranscribeJob) -> None:
+        # Whisper and the AI helper don't both fit in the graphics memory.
+        if self.before_transcribe is not None:
+            self.before_transcribe()
         self.job = job
         self.total = 0.0
         self.live_text.clear()
@@ -367,7 +381,7 @@ class FlowView(QWidget):
         lay.addWidget(self.choose_label)
         choices = QHBoxLayout()
         self.local_button = secondary_button()
-        self.local_button.setEnabled(False)
+        self.local_button.clicked.connect(self._request_local)
         self.export_button = primary_button()
         self.export_button.clicked.connect(self._request_export)
         self.keep_button = secondary_button()
@@ -376,6 +390,17 @@ class FlowView(QWidget):
             b.setMinimumHeight(56)
             choices.addWidget(b)
         lay.addLayout(choices)
+        self.local_bar = QProgressBar()
+        self.local_bar.setRange(0, 100)
+        self.local_bar.setTextVisible(False)
+        self.local_bar.setMaximumHeight(8)
+        self.local_bar.hide()
+        lay.addWidget(self.local_bar)
+        self.local_problem = QLabel()
+        self.local_problem.setWordWrap(True)
+        self.local_problem.setStyleSheet("color: #c0392b;")
+        self.local_problem.hide()
+        lay.addWidget(self.local_problem)
         self.export_hint = body_label()
         lay.addWidget(self.export_hint)
 
@@ -385,6 +410,64 @@ class FlowView(QWidget):
     def _request_export(self) -> None:
         if self.item:
             self.export_requested.emit(self.item.raw_path, list(self.last_names), self.transcript_language())
+
+    def llm_ready(self) -> bool:
+        p = self.settings.llm_model_path
+        return bool(p and os.path.isfile(p))
+
+    def _llm_choice(self) -> tuple[str, str]:
+        """(model key, backend) for this computer; checked once, since it asks the graphics card."""
+        if self._llm_pick is None:
+            info = detect_system(paths.data_dir())
+            self._llm_pick = (choose_llm(info)[0], choose_backend(info))
+        return self._llm_pick
+
+    def _update_local_button(self) -> None:
+        tr = self.i18n.tr
+        if self.llm_ready() or self.llm_download.is_running():
+            first = tr("result.local")
+        else:
+            size = MODELS[self._llm_choice()[0]].size + LLM_RUNTIME_ESTIMATE
+            first = tr("result.local_download", size=fmt_bytes(size, self.i18n.language))
+        self.local_button.setText(first + "\n" + tr("result.local_hint"))
+        self.local_problem.setText(tr("result.local_download_failed"))
+
+    def _request_local(self) -> None:
+        if not self.item:
+            return
+        if self.llm_ready():
+            self.local_requested.emit(self.item.raw_path, list(self.last_names), self.transcript_language())
+            return
+        # Not downloaded yet: one click downloads it, then the fix starts.
+        key, backend = self._llm_choice()
+        self._download_for = self.item
+        self.local_problem.hide()
+        self.local_bar.setValue(0)
+        self.local_bar.show()
+        self.local_button.setEnabled(False)
+        self.llm_download.start_llm(key, backend, self.settings)
+
+    def _on_llm_progress(self, p) -> None:
+        self.local_bar.setValue(int(100 * p.overall_done / p.overall_total) if p.overall_total else 0)
+
+    def _on_llm_downloaded(self, new) -> None:
+        for f in ("llm_model", "llm_model_path", "llm_backend"):
+            setattr(self.settings, f, getattr(new, f))
+        save_settings(self.settings, paths.settings_file())
+        self.local_bar.hide()
+        self.local_button.setEnabled(True)
+        self._update_local_button()
+        # Continue to the fix, unless the person has moved on to something else meanwhile.
+        if self.item is self._download_for and self.state() == "result" and self.isVisible():
+            self._request_local()
+        self._download_for = None
+
+    def _on_llm_failed(self, kind: str) -> None:
+        self.local_bar.hide()
+        self.local_button.setEnabled(True)
+        self._download_for = None
+        if kind != "cancelled":
+            self.local_problem.show()
 
     def open_result(self, item: RecentItem, from_recents: bool = False) -> None:
         if from_recents:
@@ -398,6 +481,9 @@ class FlowView(QWidget):
         self.result_text.setPlainText(text)
         set_text_direction(self.result_text, self.transcript_language())
         self.saved_label.setText(self.i18n.tr("result.saved_at", path=item.raw_path))
+        if not self.llm_download.is_running():
+            self.local_problem.hide()
+        self._update_local_button()
         self._show("result")
 
     def _open_folder(self) -> None:
@@ -436,7 +522,8 @@ class FlowView(QWidget):
         self.result_title.setText(tr("result.title"))
         self.open_folder_button.setText(tr("result.open_folder"))
         self.choose_label.setText(tr("result.choose"))
-        self.local_button.setText(tr("result.local") + "\n" + tr("result.local_soon"))
+        if self.item:
+            self._update_local_button()
         self.export_button.setText(tr("result.export"))
         self.export_hint.setText(tr("result.export_hint"))
         self.keep_button.setText(tr("result.just_save"))
