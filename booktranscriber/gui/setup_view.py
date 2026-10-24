@@ -291,11 +291,13 @@ class SetupView(QWidget):
         self.retry_button.setText(tr("error.check_again" if kind == "disk" else "error.try_again"))
         self.cpu_button.setText(tr("error.use_cpu"))
         self.cpu_button.setVisible(kind == "gpu")
-        # Out of space, but enough without the optional helper: offer to leave it out.
+        # Out of space but enough without the optional helper, or the helper's own download failed
+        # (everything else is in place): offer to leave it out. What arrived is kept for next time.
         self.skip_llm_button.setText(tr("error.skip_llm"))
-        self.skip_llm_button.setVisible(kind == "disk" and err is not None and err.kind == "disk"
-                                        and err.fits_without_llm and self.plan is not None
-                                        and self.plan.include_llm)
+        skippable = err is not None and err.kind == kind and (
+            (kind == "disk" and err.fits_without_llm)
+            or (kind in ("network", "checksum") and err.item == "llm"))
+        self.skip_llm_button.setVisible(skippable and self.plan is not None and self.plan.include_llm)
         self.details_button.setText(tr("error.details"))
         self.details_button.setVisible(kind == "test")
 

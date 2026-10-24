@@ -30,10 +30,11 @@ SELFTEST_TIMEOUT = 600
 
 class SetupError(Exception):
     def __init__(self, kind: str, message: str = "", needed: int = 0, free: int = 0,
-                 fits_without_llm: bool = False):
+                 fits_without_llm: bool = False, item: str | None = None):
         super().__init__(message or kind)
         self.kind, self.needed, self.free = kind, needed, free
         self.fits_without_llm = fits_without_llm    # the space is enough if the optional helper is skipped
+        self.item = item    # the setup item (ITEMS) being fetched when it failed, if any
 
 
 @dataclass
@@ -228,9 +229,13 @@ def _fetch(steps: list[_Step], on_progress, cancel, downloader, check: bool = Fa
             if not st.skip:
                 def prog(n, f=f):
                     meter.report(item, meter.base - item_base + n, item_total, n)
-                _download(downloader, f, prog, cancel)
-                if st.after:
-                    st.after(f)
+                try:
+                    _download(downloader, f, prog, cancel)
+                    if st.after:
+                        st.after(f)
+                except SetupError as e:
+                    e.item = e.item or item     # so a failed optional helper can be skipped
+                    raise
             meter.base += f.size
         meter.report(item, item_total, item_total)
     return meter

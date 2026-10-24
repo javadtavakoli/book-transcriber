@@ -314,3 +314,25 @@ def test_run_llm_setup_disk_error_never_offers_skip(monkeypatch):
     with pytest.raises(SetupError) as e:
         run_llm_setup("gemma-4-e4b", "vulkan", Settings(), no_test, threading.Event(), downloader=fake_dl, llm=FakeLlm())
     assert e.value.kind == "disk" and e.value.fits_without_llm is False
+
+
+@pytest.mark.parametrize("failing,item", [("model-", "llm"), ("m0", "whisper")])
+def test_download_error_says_which_item_failed(failing, item):
+    def dl(url, *a, **k):
+        if url.startswith(failing):
+            raise NetworkError("x")
+        fake_dl(url, *a, **k)
+    with pytest.raises(SetupError) as e:
+        run_setup(make_plan(GPU_INFO, None), Settings(), no_test, threading.Event(), downloader=dl,
+                  sources=FakeSources(), selftest=no_test, llm=FakeLlm())
+    assert (e.value.kind, e.value.item) == ("network", item)
+
+
+def test_llm_extract_error_says_llm():
+    class BadArchive(FakeLlm):
+        def extract_archive(self, archive, dest, cancel=None):
+            raise RuntimeError("broken archive")
+    with pytest.raises(SetupError) as e:
+        run_setup(make_plan(GPU_INFO, None), Settings(), no_test, threading.Event(), downloader=fake_dl,
+                  sources=FakeSources(), selftest=no_test, llm=BadArchive())
+    assert (e.value.kind, e.value.item) == ("network", "llm")

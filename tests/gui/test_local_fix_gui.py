@@ -145,6 +145,24 @@ def test_setup_disk_error_offers_skip_ai_helper(qtbot, monkeypatch):
     assert v.skip_llm_button.isHidden()
 
 
+@pytest.mark.parametrize("kind,item,offered", [("network", "llm", True), ("checksum", "llm", True),
+                                               ("network", "whisper", False)])
+def test_setup_download_error_on_ai_helper_offers_skip(qtbot, monkeypatch, kind, item, offered):
+    monkeypatch.setattr(setup_view, "find_existing_model", lambda dirs, model: None)
+    monkeypatch.setattr(setup_view, "detect_system", lambda d: OK)
+    runner = FakeSetupRunner()
+    v = SetupView(I18n("en"), Settings(), runner)
+    qtbot.addWidget(v)
+    v.start()
+    runner.last_error = SetupError(kind, item=item)
+    runner.failed.emit(kind)
+    assert v.state() == "error" and not v.retry_button.isHidden()
+    assert v.skip_llm_button.isHidden() is not offered
+    if offered:
+        qtbot.mouseClick(v.skip_llm_button, Qt.LeftButton)
+        assert not runner.starts[-1][0].include_llm and v.state() == "downloading"
+
+
 # --- the local fix panel ------------------------------------------------------------
 def test_local_view_fixes_and_emits_review(qtbot, local, binaries, raw_file):
     binaries({"vulkan": "fix"})
