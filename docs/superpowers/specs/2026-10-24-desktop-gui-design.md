@@ -182,7 +182,7 @@ Filler words and colloquial speech are kept.
 | Windows / Ubuntu + NVIDIA | faster-whisper on CUDA | CUDA wheels (`nvidia-cublas`, `nvidia-cudnn`) are **downloaded during setup**, not bundled, so the installer stays small |
 | Windows / Ubuntu without NVIDIA | faster-whisper on CPU (int8) | defaults to large-v3-turbo; setup warns that it is slow |
 | macOS Apple Silicon | **mlx-whisper** | it lacks faster-whisper's `vad_filter` and some decoding options, so **Persian quality and anti-repetition behaviour must be verified separately** before macOS ships |
-| macOS Intel | faster-whisper on CPU | best-effort |
+| macOS Intel | faster-whisper on CPU | best-effort (untested) |
 
 ### 6.4 Data locations
 Everything lives in the per-user data directory (`platformdirs`):
@@ -248,8 +248,12 @@ Each stage is usable on its own and gets its own plan:
   (mockups use «کتاب‌نویس», a placeholder).
 - Diff/highlight implementation and the recent-transcripts storage format.
 
-## 10. Open questions (owner)
-- **Code signing:** an Apple Developer ID ($99/yr) with notarization, and a Windows code-signing certificate,
-  or accept "right-click → Open" / "More info → Run anyway" instructions for unsigned builds?
-- **Test machines:** is a Mac (Apple Silicon or Intel) and a Windows PC available for testing? If not,
-  macOS is best-effort.
+## 10. Owner decisions
+- **Unsigned builds.** No Apple Developer ID and no Windows code-signing certificate. The release notes and README
+  Download section therefore include short illustrated "first time opening" steps, in Persian and English:
+  - **macOS:** right-click the app → **Open** → **Open**, or *System Settings → Privacy & Security →
+    Open Anyway*.
+  - **Windows:** on the SmartScreen warning, click **More info** → **Run anyway**.
+  - The setup's Welcome screen does not depend on these steps, because they happen before the app runs.
+- **Test machines:** the owner has a Windows PC and an **Apple Silicon Mac**. macOS on Apple Silicon is
+  therefore fully supported and tested. Intel Macs remain best-effort.
