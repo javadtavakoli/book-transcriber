@@ -308,6 +308,51 @@ def test_server_stopped_before_new_transcription(qtbot, window, binaries, raw_fi
     assert seen == [(False, False)]
 
 
+@pytest.fixture
+def chat_in_flight(qtbot, window, binaries, raw_file, tmp_path, monkeypatch):
+    """The window fixing with a helper that is answering (holding) its first chat request; its pid."""
+    chats = tmp_path / "chats.txt"
+    monkeypatch.setenv("FAKE_LLAMA_CHATS", str(chats))
+    binaries({"vulkan": "holdchat"})
+    open_recent(window, raw_file)
+    window.flow_view.local_button.click()
+    qtbot.waitUntil(lambda: window.local_view.state() == "fixing" and chats.exists(), timeout=20000)
+    assert window.local_runner.is_running() and window.busy()
+    return window.local_runner._server.pid
+
+
+def fix_threads_running(r) -> bool:
+    return any(t is not None and t.isRunning() for t in [r._thread, *r._winding_down])
+
+
+def test_new_transcription_while_answering_stops_helper_first(qtbot, window, raw_file, chat_in_flight,
+                                                              monkeypatch):
+    import time
+    w, pid = window, chat_in_flight
+    seen = []
+    monkeypatch.setattr(w.transcriber, "start",
+                        lambda job: seen.append((alive(pid), fix_threads_running(w.local_runner))))
+    audio = raw_file.with_name("next.m4a")
+    audio.write_bytes(b"x")
+    t0 = time.monotonic()
+    w.home_view.handle_files([str(audio)])
+    w.flow_view.skip_button.click()
+    assert seen == [(False, False)] and time.monotonic() - t0 < 10
+    assert not w.local_runner.server_loaded() and not list(llm_server._servers)
+
+
+def test_close_while_answering_stops_everything(qtbot, window, chat_in_flight, monkeypatch):
+    import time
+    w, pid = window, chat_in_flight
+    w.show()
+    monkeypatch.setattr(w, "confirm_quit", lambda: True)
+    t0 = time.monotonic()
+    w.close()
+    assert time.monotonic() - t0 < 10
+    assert not alive(pid) and not fix_threads_running(w.local_runner)
+    assert not w.local_runner.server_loaded() and not list(llm_server._servers)
+
+
 def test_retry_after_failure_also_stops_server(qtbot, settings):
     calls = []
     v = FlowView(I18n("en"), settings, FakeTranscriber(), before_transcribe=lambda: calls.append("stop"))

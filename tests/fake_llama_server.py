@@ -2,8 +2,11 @@
 
 Usage: fake_llama_server.py <mode> --port N [real llama-server arguments, unknown ones ignored]
 Modes: ok, slow (echo answers), fix (echo with one spelling fixed), think (echo after a
-<think> block), dropfirst (first answer omits its last line, later ones echo), http500 (chat fails), oom and crash (exit during load), hang (never ready).
+<think> block), dropfirst (first answer omits its last line, later ones echo), http500 (chat fails),
+holdchat (echo, but only after HOLD_SECONDS: a request stays in flight), oom and crash (exit during load),
+hang (never ready).
 If FAKE_LLAMA_LOG is set, the argument list is appended to that file as one JSON line.
+If FAKE_LLAMA_CHATS is set, a line is appended to that file as each chat request arrives.
 """
 import argparse
 import json
@@ -32,6 +35,7 @@ OOM_LINES = [
     "0.03.112.901 E ggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory",
     "0.03.113.004 E llama_model_load: error loading model: unable to allocate Vulkan0 buffer",
 ]
+HOLD_SECONDS = 30   # long enough that a test waiting it out fails, short enough not to hang forever
 LOADING = {"error": {"message": "Loading model", "type": "unavailable_error", "code": 503}}
 
 ready = threading.Event()
@@ -78,6 +82,11 @@ def make_handler(mode: str):
                 return self._send(404, {"error": {"message": "File Not Found", "code": 404}})
             if not ready.is_set():
                 return self._send(503, LOADING)
+            if os.environ.get("FAKE_LLAMA_CHATS"):
+                with open(os.environ["FAKE_LLAMA_CHATS"], "a", encoding="utf-8") as f:
+                    f.write("chat\n")
+            if mode == "holdchat":
+                time.sleep(HOLD_SECONDS)
             if mode == "http500":
                 return self._send(500, {"error": {"message": "fake failure", "type": "server_error",
                                                   "code": 500}})
