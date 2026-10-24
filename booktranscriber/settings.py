@@ -18,6 +18,7 @@ class Settings:
     llm_model_path: str | None = None
     llm_backend: str | None = None
     llm_load_seconds: float | None = None
+    downloads_dir: str | None = None
 
 
 def load_settings(path: Path) -> Settings:

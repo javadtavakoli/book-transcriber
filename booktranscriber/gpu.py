@@ -28,7 +28,7 @@ def default_lib_dirs(include_site: bool = True) -> list[str]:
     from . import paths
     windows = sys.platform == "win32"
     try:
-        app_roots = [str(paths.data_dir_path() / "gpu" / "nvidia")]
+        app_roots = [str(paths.downloads_dir_path() / "gpu" / "nvidia")]
     except ImportError:     # CLI on a venv made before the desktop app existed
         app_roots = []
     return nvidia_lib_dirs(app_roots + (site_nvidia_roots() if include_site else []), windows)

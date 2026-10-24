@@ -212,7 +212,7 @@ def _fetch(steps: list[_Step], on_progress, cancel, downloader, check: bool = Fa
         pending = [st for st in chosen if not st.skip]
         return sum(_left(st.file) for st in pending) + sum(st.file.size for st in pending if st.unpack)
     needed = room(steps)
-    free = shutil.disk_usage(paths.data_dir()).free
+    free = shutil.disk_usage(paths.downloads_dir()).free
     if free < needed:
         fits = llm_optional and room([st for st in steps if st.item != "llm"]) <= free
         raise SetupError("disk", needed=needed, free=free, fits_without_llm=fits)

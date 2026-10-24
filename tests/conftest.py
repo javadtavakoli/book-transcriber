@@ -16,6 +16,15 @@ def _isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("BT_DATA_DIR", str(tmp_path / "data"))
 
 
+@pytest.fixture(autouse=True)
+def registry_calls(monkeypatch):
+    """No test touches the real Windows registry; the folders it would have been given are recorded."""
+    from booktranscriber import downloads
+    calls = []
+    monkeypatch.setattr(downloads, "mirror_to_registry", calls.append)
+    return calls
+
+
 @pytest.fixture
 def wav_file(tmp_path):
     """2 s of 16 kHz mono silence."""

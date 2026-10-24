@@ -71,18 +71,43 @@ def data_dir() -> Path:
     return d
 
 
-def _sub(name: str) -> Path:
-    d = data_dir() / name
+def downloads_dir_path() -> Path:
+    """Where the big downloads live (models, GPU libraries, the AI helper), without creating anything.
+
+    settings.json's downloads_dir when set, else the app folder. Read straight from the JSON so this
+    module never imports settings; a missing or broken file means the default.
+    """
+    import json
+    try:
+        data = json.loads((data_dir_path() / "settings.json").read_text("utf-8"))
+        v = data.get("downloads_dir") if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        v = None
+    return Path(v) if isinstance(v, str) and v else data_dir_path()
+
+
+def downloads_dir() -> Path:
+    d = downloads_dir_path()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _sub(name: str, root=data_dir) -> Path:
+    d = root() / name
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def models_dir() -> Path:
-    return _sub("models")
+    return _sub("models", downloads_dir)
 
 
 def gpu_dir() -> Path:
-    return _sub("gpu")
+    return _sub("gpu", downloads_dir)
+
+
+def llm_dir() -> Path:
+    return _sub("llm", downloads_dir)
 
 
 def namelists_dir() -> Path:

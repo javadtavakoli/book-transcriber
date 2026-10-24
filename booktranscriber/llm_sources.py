@@ -13,7 +13,7 @@ DONE_MARKER = ".done"
 
 
 def _llm_dir() -> Path:
-    return paths.data_dir() / "llm"
+    return paths.llm_dir()
 
 
 def runtime_dir(backend: str) -> Path:
