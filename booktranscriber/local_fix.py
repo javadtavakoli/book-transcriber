@@ -68,7 +68,7 @@ def _request(client: httpx.Client, port: int, system: str, rows: dict[int, str])
     user = "\n".join(f"[{n}] {text}" for n, text in rows.items())
     try:
         answer = parse_answer(_THINK_RE.sub("", _ask(client, port, system, user)))
-    except (httpx.HTTPError, KeyError, IndexError, ValueError):
+    except (httpx.HTTPError, KeyError, IndexError, ValueError, TypeError, AttributeError):
         return {}
     return {n: t for n, t in answer.items() if n in rows}
 

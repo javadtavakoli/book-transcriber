@@ -1,6 +1,7 @@
 import threading
 from pathlib import Path
 
+import httpx
 import pytest
 
 from booktranscriber import local_fix
@@ -126,3 +127,24 @@ def test_prompt_example_does_not_overlap_test_transcript(lines):
     transcript = [w for l in lines for w in l.split("] ", 1)[-1].split()]
     seen = {tuple(transcript[i:i + 3]) for i in range(len(transcript) - 2)}
     assert not grams & seen
+
+
+def _json_reply(body):
+    return lambda request: httpx.Response(200, json=body)
+
+
+@pytest.mark.parametrize("handler", [
+    _json_reply({"choices": [{"message": {"content": "Sure! Here you go, nothing else to say."}}]}),   # chatter
+    _json_reply({"choices": [{"message": {"content": ""}}]}),                                          # empty
+    _json_reply({"choices": [{"message": {"content": "[1] Hello there\n[2] Fine"}}]}),                 # non-Persian
+    lambda request: httpx.Response(200, content=b"{not json"),                                        # malformed JSON
+    _json_reply({"error": "no choices"}),                                                              # missing choices
+    _json_reply(["unexpected", "list"]),                                                               # list body
+    _json_reply({"choices": [{"message": {"content": ["not", "a", "string"]}}]}),                      # content not a string
+    _json_reply({"choices": [{"message": {"content": 42}}]}),                                          # content a number
+], ids=["chatter", "empty", "non_persian", "bad_json", "no_choices", "list_body", "list_content", "int_content"])
+def test_bad_answers_keep_originals_and_finish(lines, handler):
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    fixes = local_fix.fix_transcript(lines, [], 1, lambda d, t: None, threading.Event(), client)
+    assert len(fixes) == len(lines)
+    assert not any(f.accepted for f in fixes)

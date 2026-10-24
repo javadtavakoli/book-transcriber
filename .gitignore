@@ -13,6 +13,7 @@ models/
 # ...but keep project text files that belong in the repo
 !README*.txt
 !requirements.txt
+!tests/fixtures/*.txt
 !requirements-*.txt
 
 # Python
