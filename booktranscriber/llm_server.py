@@ -312,6 +312,10 @@ class LlamaServer:
             self._wait_ready(proc, reader, log, on_progress, cancel, timeout, LoadEstimator(previous_seconds))
         except BaseException:
             self.stop()   # cancelled, failed, or on_progress raised: never leave it running
+            try:          # a stop() from another thread may still be ending it: return only once it has
+                proc.wait(15)
+            except subprocess.TimeoutExpired:
+                pass
             raise
 
     def _wait_ready(self, proc, reader, log, on_progress, cancel, timeout, estimator) -> None:
