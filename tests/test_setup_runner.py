@@ -494,3 +494,17 @@ def test_listing_a_missing_repo_is_not_retried():
         run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), no_test, threading.Event(),
                   downloader=fake_dl, sources=Gone(), selftest=no_test)
     assert e.value.kind == "network" and len(calls) == 1
+
+
+def test_a_server_that_restarts_the_file_still_gives_up():
+    attempts = []
+
+    def restarting(url, dest, size, sha256, on_progress, cancel, client=None):
+        attempts.append(url)
+        on_progress(0)          # ignores resume: back to the start every time
+        on_progress(10)
+        raise NetworkError("reset")
+    with pytest.raises(SetupError) as e:
+        run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), no_test, threading.Event(),
+                  downloader=restarting, sources=FakeSources(), selftest=no_test)
+    assert e.value.kind == "network" and len(attempts) == 31

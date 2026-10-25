@@ -216,3 +216,13 @@ def test_retry_text_goes_away_when_data_flows_or_paused(qtbot, system):
     runner.failed.emit("cancelled")
     assert v.pause_button.text() == "Continue"
     assert "Trying again" not in label(v, "overall_status") and label(v, "overall_status") == "62%"
+
+
+def test_pause_while_listing_files_clears_the_retry_line(qtbot, system):
+    system(OK)
+    v, runner = make(qtbot)
+    v.start()
+    runner.progress.emit(SetupProgress("check", 0, 1, 0, 0, 0.0, None, 2))
+    qtbot.mouseClick(v.pause_button, Qt.LeftButton)
+    runner.failed.emit("cancelled")
+    assert label(v, "overall_status") == "0%"

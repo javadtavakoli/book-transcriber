@@ -146,7 +146,7 @@ def run_setup(plan: SetupPlan, settings: Settings, on_progress: Callable[[SetupP
 
     def list_files():
         try:
-            with httpx.Client(follow_redirects=True, timeout=30) as client:
+            with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0, connect=10.0, read=15.0)) as client:
                 gpu = sources.gpu_wheel_files(plan.info.os, gpu_dir, client) if plan.include_gpu else []
             model = [] if plan.reuse_model_path else sources.model_files(WHISPER_REPOS[plan.whisper_model], model_path)
         except (httpx.HTTPError, OSError) as e:
@@ -279,7 +279,7 @@ def _retrying(attempt, cancel: threading.Event, on_retry: Callable[[int], None],
     line that keeps advancing is never given up on. on_retry(n) is called before waiting for retry n.
     Pause or closing the window ends the wait at once.
     """
-    failures, last = 0, progress()
+    failures, best = 0, progress()
     while True:
         try:
             return attempt()
@@ -287,8 +287,9 @@ def _retrying(attempt, cancel: threading.Event, on_retry: Callable[[int], None],
             if e.kind != "network" or not e.transient:
                 raise
             now = progress()
-            failures = 1 if now != last else failures + 1
-            last = now
+            # Only getting further than ever before counts (a server that restarts the file doesn't).
+            failures = 1 if now > best else failures + 1
+            best = max(best, now)
             if failures > NETWORK_RETRIES:
                 raise
         on_retry(failures)

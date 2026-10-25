@@ -355,10 +355,10 @@ class SetupView(QWidget):
         if kind == "cancelled":
             self.paused = True
             self.pause_button.setText(self.i18n.tr("setup.continue"))
-            if self.overall_total:      # not "Trying again in 5 seconds" next to Continue
-                pct = int(100 * self.last_done / self.overall_total)
-                self.overall_status.setText(self.i18n.tr("setup.overall_status_noeta",
-                                                         pct=fmt_number(pct, self.i18n.language)))
+            # Not "Trying again in 5 seconds" next to Continue.
+            pct = int(100 * self.last_done / self.overall_total) if self.overall_total else 0
+            self.overall_status.setText(self.i18n.tr("setup.overall_status_noeta",
+                                                     pct=fmt_number(pct, self.i18n.language)))
             self._show("downloading")
             return
         self.error_kind = kind
