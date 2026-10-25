@@ -117,3 +117,11 @@ The Tests workflow passed on Ubuntu, Windows and macOS (Windows is now a require
 **Draft release created.** The v0.1.1 tag's run (40142891351) passed every step: tests, the frozen-app smoke test with a real model loaded from a Persian folder, the Persian installer build, and the draft release step. The draft "Writing Parrot v0.1.1" holds `WritingParrot-Setup-0.1.1.exe` (96.7 MB) and `SHA256SUMS.txt`, with the version filled into the notes. It is still a **draft**: open GitHub → Releases to review it and press Publish.
 
 The `feature/stage3-windows` and `fix/sender-crash` branches were merged into main. Their copies on GitHub were left in place.
+
+## v0.1.2 (2026-10-25): automatic retry when the internet drops
+At the owner's request, setup and the AI helper's later download no longer stop at the first network hiccup with a Try again button.
+- **Automatic retries:** each download, and the initial file list, is retried on its own every 5 seconds, up to 30 times in a row. It resumes where it stopped. The screen says "No internet connection. Trying again in 5 seconds (3 of 30)…".
+- **Counting:** the count starts again whenever the download gets further, so a slow but advancing line is never given up on.
+- **Not retried:** a server refusal (404/403), checksum errors, a full disk and broken archives. These show the error screen at once.
+- **Pause and Cancel** end the wait immediately. After 30 failures in a row, the usual error screen appears.
+- Reviewed and approved. CI passed on all three systems.
