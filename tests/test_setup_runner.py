@@ -358,13 +358,15 @@ def test_dropped_connection_is_retried_until_it_works():
     assert s.setup_done and attempts.count("m0") == 4
     assert [p.retry for p in seen if p.retry] == [1, 2, 3]
     assert all(p.item == "whisper" for p in seen if p.retry)
-    assert setup_runner.NETWORK_RETRIES == 30 and setup_runner.RETRY_DELAY == 0   # 5.0 in the app; tests patch it
 
 
-def test_retry_constants_are_the_owners(monkeypatch):
+def test_retry_constants_are_the_owners():
+    import ast
     from booktranscriber import setup_runner
-    monkeypatch.undo()      # see the app's own values, not the conftest's no-wait patch
-    assert (setup_runner.NETWORK_RETRIES, setup_runner.RETRY_DELAY) == (30, 5.0)
+    tree = ast.parse(Path(setup_runner.__file__).read_text("utf-8"))
+    values = {t.id: n.value.value for n in tree.body if isinstance(n, ast.Assign)
+              for t in n.targets if isinstance(t, ast.Name) and isinstance(n.value, ast.Constant)}
+    assert (values["NETWORK_RETRIES"], values["RETRY_DELAY"]) == (30, 5.0)
 
 
 def test_gives_up_after_30_retries():
@@ -432,5 +434,63 @@ def test_helper_download_later_retries_too():
         if len(attempts) == 1:
             raise NetworkError("reset")
         fake_dl(url, *a, **k)
-    run_llm_setup("gemma-4-e4b", "vulkan", Settings(), no_test, threading.Event(), downloader=flaky, llm=FakeLlm())
-    assert attempts[0] == attempts[1]
+    seen = []
+    run_llm_setup("gemma-4-e4b", "vulkan", Settings(), seen.append, threading.Event(), downloader=flaky, llm=FakeLlm())
+    assert attempts[0] == attempts[1] and [p.retry for p in seen if p.retry] == [1]
+
+
+def test_a_file_the_server_refuses_is_not_retried():
+    attempts = []
+
+    def gone(url, *a, **k):
+        attempts.append(url)
+        raise NetworkError("404 Not Found", transient=False)
+    with pytest.raises(SetupError) as e:
+        run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), no_test, threading.Event(),
+                  downloader=gone, sources=FakeSources(), selftest=no_test)
+    assert e.value.kind == "network" and len(attempts) == 1
+
+
+def test_the_count_starts_again_when_the_download_moves_on():
+    calls = []
+
+    def creeping(url, dest, size, sha256, on_progress, cancel, client=None):
+        calls.append(url)
+        if url != "m0":
+            return fake_dl(url, dest, size, sha256, on_progress, cancel)
+        n = len([c for c in calls if c == "m0"])
+        if n <= 60:                         # 60 drops in all, but a little further every second try
+            on_progress(n // 2)
+            raise NetworkError("reset")
+        fake_dl(url, dest, size, sha256, on_progress, cancel)
+    s = run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), no_test, threading.Event(),
+                  downloader=creeping, sources=FakeSources(), selftest=no_test)
+    assert s.setup_done and calls.count("m0") == 61
+
+
+def test_extraction_failure_is_not_retried():
+    class BadArchive(FakeLlm):
+        tries = 0
+
+        def extract_archive(self, archive, dest, cancel=None):
+            BadArchive.tries += 1
+            raise RuntimeError("broken archive")
+    with pytest.raises(SetupError):
+        run_setup(make_plan(GPU_INFO, None), Settings(), no_test, threading.Event(), downloader=fake_dl,
+                  sources=FakeSources(), selftest=no_test, llm=BadArchive())
+    assert BadArchive.tries == 1
+
+
+def test_listing_a_missing_repo_is_not_retried():
+    import httpx
+    calls = []
+
+    class Gone(FakeSources):
+        def model_files(self, repo_id, dest_dir):
+            calls.append(repo_id)
+            req = httpx.Request("GET", "https://huggingface.co/api/models/x")
+            raise httpx.HTTPStatusError("404", request=req, response=httpx.Response(404, request=req))
+    with pytest.raises(SetupError) as e:
+        run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), no_test, threading.Event(),
+                  downloader=fake_dl, sources=Gone(), selftest=no_test)
+    assert e.value.kind == "network" and len(calls) == 1

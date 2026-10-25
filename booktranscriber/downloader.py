@@ -19,7 +19,25 @@ class ChecksumError(Exception):
 
 
 class NetworkError(Exception):
-    pass
+    """The download failed on the way. transient=False when the server answered that it won't come
+    (a 404 or 403, say): waiting and trying again would not help."""
+
+    def __init__(self, message: str = "", transient: bool = True):
+        super().__init__(message)
+        self.transient = transient
+
+
+RETRYABLE_STATUS = {408, 425, 429}     # plus every 5xx: the server is busy or briefly broken
+
+
+def is_transient(e: Exception) -> bool:
+    """Whether an httpx or network error may go away by itself (no connection, a timeout, a 5xx)."""
+    # httpx's status errors and Hugging Face's (which aren't HTTPStatusError) both carry the response.
+    response = getattr(e, "response", None)
+    code = getattr(response, "status_code", None)
+    if isinstance(code, int):
+        return code >= 500 or code in RETRYABLE_STATUS
+    return True
 
 
 def download_file(url: str, dest: Path, size: int | None, sha256: str | None,
@@ -37,11 +55,12 @@ def download_file(url: str, dest: Path, size: int | None, sha256: str | None,
     part = dest.with_name(dest.name + ".part")
     own_client = client is None
     # A short read timeout bounds how long a stalled connection can delay Pause or closing the app.
-    client = client or httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0, read=15.0))
+    client = client or httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0, connect=10.0, read=15.0))
+    before = part.stat().st_size if part.exists() else 0
     try:
         _fetch(client, url, part, on_progress, cancel)
     except httpx.HTTPError as e:
-        raise NetworkError(str(e)) from e
+        raise NetworkError(str(e), transient=is_transient(e)) from e
     except OSError as e:
         if isinstance(e, (PermissionError, FileNotFoundError)) or getattr(e, "errno", None) == 28:
             raise
@@ -50,6 +69,10 @@ def download_file(url: str, dest: Path, size: int | None, sha256: str | None,
         if own_client:
             client.close()
 
+    if size is not None and before < part.stat().st_size < size:
+        # The connection closed early without an error: keep what arrived and resume it next time.
+        # (Nothing new at all means the server has no more to give: that's damage, below.)
+        raise NetworkError(f"{dest.name} stopped arriving early")
     if (size is not None and part.stat().st_size != size) or (sha256 and _sha256(part, cancel) != sha256.lower()):
         part.unlink()
         raise ChecksumError(f"{dest.name} arrived damaged")

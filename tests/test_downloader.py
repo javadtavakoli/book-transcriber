@@ -97,8 +97,14 @@ def test_checksum_mismatch_deletes_part(server, tmp_path):
 
 
 def test_size_mismatch_is_checksum_error(server, tmp_path):
+    # Shorter than promised: first kept and resumed (a connection that closed early)...
+    with pytest.raises(NetworkError):
+        download_file(server.url, tmp_path / "f.bin", len(PAYLOAD) + 1, None, noop, threading.Event())
+    assert (tmp_path / "f.bin.part").stat().st_size == len(PAYLOAD)
+    # ...but when the server has nothing more to send, the file is damaged.
     with pytest.raises(ChecksumError):
         download_file(server.url, tmp_path / "f.bin", len(PAYLOAD) + 1, None, noop, threading.Event())
+    assert not (tmp_path / "f.bin.part").exists()
 
 
 def test_cancel_keeps_part(server, tmp_path):
@@ -126,8 +132,9 @@ def test_unreachable_server_is_network_error(tmp_path):
 
 def test_http_error_status_is_network_error(tmp_path):
     client = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(404)))
-    with pytest.raises(NetworkError):
+    with pytest.raises(NetworkError) as e:
         download_file("http://example.invalid/x", tmp_path / "f.bin", 10, None, noop, threading.Event(), client=client)
+    assert e.value.transient is False       # the server said no: waiting won't help
 
 
 def test_checksum_pass_honours_cancel(tmp_path):
@@ -138,3 +145,14 @@ def test_checksum_pass_honours_cancel(tmp_path):
     ev.set()
     with pytest.raises(DownloadCancelled):
         _sha256(f, ev)
+
+
+def test_status_errors_say_whether_waiting_helps():
+    import httpx
+    from booktranscriber.downloader import is_transient
+    req = httpx.Request("GET", "https://x")
+
+    def err(code):
+        return httpx.HTTPStatusError(str(code), request=req, response=httpx.Response(code, request=req))
+    assert not is_transient(err(404)) and not is_transient(err(403))
+    assert is_transient(err(503)) and is_transient(err(429)) and is_transient(httpx.ConnectError("down"))

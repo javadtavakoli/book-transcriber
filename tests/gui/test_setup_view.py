@@ -201,3 +201,18 @@ def test_retry_while_listing_files_in_persian(qtbot, system, monkeypatch):
     runner.progress.emit(SetupProgress("check", 0, 1, 0, 0, 0.0, None, 1))
     assert v.state() == "downloading"
     assert "۵" in label(v, "overall_status") and "(۱ از ۳۰)" in label(v, "overall_status")
+
+
+def test_retry_text_goes_away_when_data_flows_or_paused(qtbot, system):
+    system(OK)
+    v, runner = make(qtbot)
+    v.start()
+    runner.progress.emit(SetupProgress("whisper", 1_000, 3_000, 2_000, 4_000, 0.0, None, 4))
+    assert "Trying again" in label(v, "overall_status")
+    runner.progress.emit(SetupProgress("whisper", 1_500, 3_000, 2_500, 4_000, 4e6, 300))
+    assert "Trying again" not in label(v, "overall_status") and "5 min" in label(v, "overall_status")
+    runner.progress.emit(SetupProgress("whisper", 1_500, 3_000, 2_500, 4_000, 0.0, None, 1))
+    qtbot.mouseClick(v.pause_button, Qt.LeftButton)
+    runner.failed.emit("cancelled")
+    assert v.pause_button.text() == "Continue"
+    assert "Trying again" not in label(v, "overall_status") and label(v, "overall_status") == "62%"

@@ -239,7 +239,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "setup.overall": "پیشرفت کل",
         "setup.overall_status": "{pct}٪ · {time} مانده",
         "setup.overall_status_noeta": "{pct}٪",
-        "net.retrying": "اینترنت وصل نیست. {secs} ثانیه دیگر دوباره امتحان می‌کنیم ({n} از {max})…",
+        "net.retrying": "اینترنت وصل نیست. {secs} ثانیه دیگر دوباره تلاش می‌کند ({n} از {max})…",
         "setup.item.check": "بررسی رایانه",
         "setup.item.gpu": "پشتیبانی کارت گرافیک",
         "setup.item.whisper": "مدل تبدیل گفتار به متن",

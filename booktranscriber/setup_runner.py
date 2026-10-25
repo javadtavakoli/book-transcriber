@@ -15,7 +15,7 @@ from typing import Callable
 import httpx
 
 from . import llm_sources, paths, setup_sources
-from .downloader import ChecksumError, DownloadCancelled, NetworkError, download_file
+from .downloader import ChecksumError, DownloadCancelled, NetworkError, download_file, is_transient
 from .llm_catalog import MODELS, choose_backend, choose_llm
 from .settings import Settings
 from .syscheck import WHISPER_REPOS, SystemInfo, choose_whisper_model, current_os, is_nvidia
@@ -34,9 +34,10 @@ RETRY_DELAY = 5.0
 
 class SetupError(Exception):
     def __init__(self, kind: str, message: str = "", needed: int = 0, free: int = 0,
-                 fits_without_llm: bool = False, item: str | None = None):
+                 fits_without_llm: bool = False, item: str | None = None, transient: bool = True):
         super().__init__(message or kind)
         self.kind, self.needed, self.free = kind, needed, free
+        self.transient = transient  # a "network" error that may go away by itself, so worth retrying
         self.fits_without_llm = fits_without_llm    # the space is enough if the optional helper is skipped
         self.item = item    # the setup item (ITEMS) being fetched when it failed, if any
 
@@ -149,7 +150,7 @@ def run_setup(plan: SetupPlan, settings: Settings, on_progress: Callable[[SetupP
                 gpu = sources.gpu_wheel_files(plan.info.os, gpu_dir, client) if plan.include_gpu else []
             model = [] if plan.reuse_model_path else sources.model_files(WHISPER_REPOS[plan.whisper_model], model_path)
         except (httpx.HTTPError, OSError) as e:
-            raise SetupError("network", str(e)) from e
+            raise SetupError("network", str(e), transient=is_transient(e)) from e
         except LookupError as e:
             raise SetupError("gpu", str(e)) from e
         return gpu, model
@@ -247,7 +248,8 @@ def _fetch(steps: list[_Step], on_progress, cancel, downloader, check: bool = Fa
                 def waiting(retry, have=have):
                     meter.report(item, meter.base - item_base + have[0], item_total, have[0], retry)
                 try:
-                    _retrying(lambda f=f, prog=prog: _download(downloader, f, prog, cancel), cancel, waiting)
+                    _retrying(lambda f=f, prog=prog: _download(downloader, f, prog, cancel), cancel, waiting,
+                              progress=lambda have=have: have[0])
                     if st.after:
                         st.after(f)
                 except SetupError as e:
@@ -270,18 +272,26 @@ def _marker(f) -> Path:
     return Path(f.dest).with_name(Path(f.dest).name + ".done")
 
 
-def _retrying(attempt, cancel: threading.Event, on_retry: Callable[[int], None]):
-    """attempt(), retried NETWORK_RETRIES times, RETRY_DELAY apart, while it fails for want of a connection.
+def _retrying(attempt, cancel: threading.Event, on_retry: Callable[[int], None], progress=lambda: 0):
+    """attempt(), retried up to NETWORK_RETRIES times in a row, RETRY_DELAY apart, while the connection fails.
 
-    on_retry(n) is called before waiting for retry n. Pause or closing the window ends the wait at once.
+    The count starts again whenever the download got further (progress() changed), so a slow, flaky
+    line that keeps advancing is never given up on. on_retry(n) is called before waiting for retry n.
+    Pause or closing the window ends the wait at once.
     """
-    for n in range(1, NETWORK_RETRIES + 2):
+    failures, last = 0, progress()
+    while True:
         try:
             return attempt()
         except SetupError as e:
-            if e.kind != "network" or n > NETWORK_RETRIES:
+            if e.kind != "network" or not e.transient:
                 raise
-        on_retry(n)
+            now = progress()
+            failures = 1 if now != last else failures + 1
+            last = now
+            if failures > NETWORK_RETRIES:
+                raise
+        on_retry(failures)
         if cancel.wait(RETRY_DELAY):
             raise SetupError("cancelled")
 
@@ -290,7 +300,7 @@ def _download(downloader, f, prog, cancel) -> None:
     try:
         downloader(f.url, f.dest, f.size, f.sha256, prog, cancel)
     except NetworkError as e:
-        raise SetupError("network", str(e)) from e
+        raise SetupError("network", str(e), transient=e.transient) from e
     except ChecksumError as e:
         raise SetupError("checksum", str(e)) from e
     except DownloadCancelled as e:
