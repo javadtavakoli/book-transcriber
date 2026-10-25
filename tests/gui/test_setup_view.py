@@ -178,3 +178,26 @@ def test_disk_error_shows_real_numbers(qtbot, system):
     runner.failed.emit("disk")
     body = label(v, "error_body")
     assert "1.4 GB" in body and "300 MB" in body
+
+
+def test_dropped_connection_shows_retry_count_not_an_error(qtbot, system, monkeypatch):
+    from booktranscriber import setup_runner
+    monkeypatch.setattr(setup_runner, "RETRY_DELAY", 5.0)
+    system(OK)
+    v, runner = make(qtbot)
+    v.start()
+    runner.progress.emit(SetupProgress("whisper", 1_000_000_000, 3_000_000_000, 2_000, 4_000, 0.0, None, 3))
+    assert v.state() == "downloading"      # waiting, not the error page with its Try again
+    assert label(v, "overall_status") == "No internet connection. Trying again in 5 seconds (3 of 30)…"
+    assert "1.0 GB / 3.0 GB" in v.rows["whisper"].status.text()
+
+
+def test_retry_while_listing_files_in_persian(qtbot, system, monkeypatch):
+    from booktranscriber import setup_runner
+    monkeypatch.setattr(setup_runner, "RETRY_DELAY", 5.0)
+    system(OK)
+    v, runner = make(qtbot, lang="fa")
+    v.start()
+    runner.progress.emit(SetupProgress("check", 0, 1, 0, 0, 0.0, None, 1))
+    assert v.state() == "downloading"
+    assert "۵" in label(v, "overall_status") and "(۱ از ۳۰)" in label(v, "overall_status")

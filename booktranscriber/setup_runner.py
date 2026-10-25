@@ -26,6 +26,10 @@ GPU_ESTIMATE = int(1.6 * GB)
 MODEL_ESTIMATE = {"large-v3": int(3.1 * GB), "large-v3-turbo": int(1.7 * GB)}
 LLM_RUNTIME_ESTIMATE = 60_000_000   # the runtime archives, ahead of the exact sizes
 SELFTEST_TIMEOUT = 600
+# A dropped connection is retried on its own this many times, this many seconds apart, before
+# setup stops and offers Try again (owner's request: no Retry button on every hiccup).
+NETWORK_RETRIES = 30
+RETRY_DELAY = 5.0
 
 
 class SetupError(Exception):
@@ -58,6 +62,7 @@ class SetupProgress:
     overall_total: int
     bytes_per_sec: float
     eta_seconds: float | None
+    retry: int = 0      # while waiting to retry a dropped connection: which retry is next (1..NETWORK_RETRIES)
 
 
 def make_plan(info: SystemInfo, existing: Path | None, include_llm: bool | None = None) -> SetupPlan:
@@ -120,7 +125,7 @@ class _Meter:
         self.total, self.on_progress, self.base = total, on_progress, 0
         self.window = deque()
 
-    def report(self, item: str, item_done: int, item_total: int, file_done: int = 0):
+    def report(self, item: str, item_done: int, item_total: int, file_done: int = 0, retry: int = 0):
         done = min(self.base + file_done, self.total)
         now = time.monotonic()
         self.window.append((now, done))
@@ -129,22 +134,28 @@ class _Meter:
         t0, d0 = self.window[0]
         speed = (done - d0) / (now - t0) if now > t0 else 0.0
         eta = (self.total - done) / speed if speed > 0 else None
-        self.on_progress(SetupProgress(item, item_done, item_total, done, self.total, speed, eta))
+        self.on_progress(SetupProgress(item, item_done, item_total, done, self.total, speed, eta, retry))
 
 
 def run_setup(plan: SetupPlan, settings: Settings, on_progress: Callable[[SetupProgress], None],
               cancel: threading.Event, *, downloader=download_file, sources=setup_sources,
               selftest=run_selftest, llm=llm_sources) -> Settings:
     gpu_dir = paths.gpu_dir()
-    try:
-        with httpx.Client(follow_redirects=True, timeout=30) as client:
-            gpu_files = sources.gpu_wheel_files(plan.info.os, gpu_dir, client) if plan.include_gpu else []
-        model_path = plan.reuse_model_path or model_dir_for(plan.whisper_model)
-        model_files = [] if plan.reuse_model_path else sources.model_files(WHISPER_REPOS[plan.whisper_model], model_path)
-    except (httpx.HTTPError, OSError) as e:
-        raise SetupError("network", str(e)) from e
-    except LookupError as e:
-        raise SetupError("gpu", str(e)) from e
+    model_path = plan.reuse_model_path or model_dir_for(plan.whisper_model)
+
+    def list_files():
+        try:
+            with httpx.Client(follow_redirects=True, timeout=30) as client:
+                gpu = sources.gpu_wheel_files(plan.info.os, gpu_dir, client) if plan.include_gpu else []
+            model = [] if plan.reuse_model_path else sources.model_files(WHISPER_REPOS[plan.whisper_model], model_path)
+        except (httpx.HTTPError, OSError) as e:
+            raise SetupError("network", str(e)) from e
+        except LookupError as e:
+            raise SetupError("gpu", str(e)) from e
+        return gpu, model
+
+    gpu_files, model_files = _retrying(
+        list_files, cancel, lambda n: on_progress(SetupProgress("check", 0, 1, 0, 0, 0.0, None, n)))
 
     def extract_wheel(f):
         try:
@@ -227,10 +238,16 @@ def _fetch(steps: list[_Step], on_progress, cancel, downloader, check: bool = Fa
         for st in group:
             f = st.file
             if not st.skip:
-                def prog(n, f=f):
+                have = [0]
+
+                def prog(n, have=have):
+                    have[0] = n
                     meter.report(item, meter.base - item_base + n, item_total, n)
+
+                def waiting(retry, have=have):
+                    meter.report(item, meter.base - item_base + have[0], item_total, have[0], retry)
                 try:
-                    _download(downloader, f, prog, cancel)
+                    _retrying(lambda f=f, prog=prog: _download(downloader, f, prog, cancel), cancel, waiting)
                     if st.after:
                         st.after(f)
                 except SetupError as e:
@@ -251,6 +268,22 @@ def _left(f) -> int:
 
 def _marker(f) -> Path:
     return Path(f.dest).with_name(Path(f.dest).name + ".done")
+
+
+def _retrying(attempt, cancel: threading.Event, on_retry: Callable[[int], None]):
+    """attempt(), retried NETWORK_RETRIES times, RETRY_DELAY apart, while it fails for want of a connection.
+
+    on_retry(n) is called before waiting for retry n. Pause or closing the window ends the wait at once.
+    """
+    for n in range(1, NETWORK_RETRIES + 2):
+        try:
+            return attempt()
+        except SetupError as e:
+            if e.kind != "network" or n > NETWORK_RETRIES:
+                raise
+        on_retry(n)
+        if cancel.wait(RETRY_DELAY):
+            raise SetupError("cancelled")
 
 
 def _download(downloader, f, prog, cancel) -> None:

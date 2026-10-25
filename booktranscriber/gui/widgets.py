@@ -61,3 +61,12 @@ class ProgressRow(QWidget):
         self.bar.setVisible(state == "active" and fraction is not None)
         if fraction is not None:
             self.bar.setValue(int(fraction * 100))
+
+
+def retry_text(i18n, retry: int) -> str:
+    """'No internet connection. Trying again in 5 seconds (3 of 30)…' while setup waits to retry."""
+    from .. import setup_runner
+    from ..i18n import fmt_number
+    lang = i18n.language
+    return i18n.tr("net.retrying", secs=fmt_number(int(setup_runner.RETRY_DELAY), lang),
+                   n=fmt_number(retry, lang), max=fmt_number(setup_runner.NETWORK_RETRIES, lang))

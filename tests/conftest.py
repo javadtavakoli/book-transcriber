@@ -17,6 +17,13 @@ def _isolated_data_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_retry_wait(monkeypatch):
+    """Dropped connections are retried 5 s apart in the app; tests don't wait."""
+    from booktranscriber import setup_runner
+    monkeypatch.setattr(setup_runner, "RETRY_DELAY", 0)
+
+
+@pytest.fixture(autouse=True)
 def registry_calls(monkeypatch):
     """No test touches the real Windows registry; the folders it would have been given are recorded."""
     from booktranscriber import downloads

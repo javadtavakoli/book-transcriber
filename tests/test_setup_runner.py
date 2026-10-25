@@ -341,3 +341,96 @@ def test_llm_extract_error_says_llm():
 def test_make_plan_amd_no_cuda():
     p = make_plan(SystemInfo("windows", GpuInfo("AMD Radeon RX 7600", 8192, "amd"), 10**12), None)
     assert p.include_gpu is False and p.whisper_model == "large-v3-turbo"
+
+
+# --- a dropped connection is retried on its own (30 times, 5 s apart) ---------------------
+def test_dropped_connection_is_retried_until_it_works():
+    from booktranscriber import setup_runner
+    attempts, seen = [], []
+
+    def flaky(url, *a, **k):
+        attempts.append(url)
+        if url == "m0" and attempts.count("m0") <= 3:
+            raise NetworkError("connection reset")
+        fake_dl(url, *a, **k)
+    s = run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), seen.append, threading.Event(),
+                  downloader=flaky, sources=FakeSources(), selftest=no_test)
+    assert s.setup_done and attempts.count("m0") == 4
+    assert [p.retry for p in seen if p.retry] == [1, 2, 3]
+    assert all(p.item == "whisper" for p in seen if p.retry)
+    assert setup_runner.NETWORK_RETRIES == 30 and setup_runner.RETRY_DELAY == 0   # 5.0 in the app; tests patch it
+
+
+def test_retry_constants_are_the_owners(monkeypatch):
+    from booktranscriber import setup_runner
+    monkeypatch.undo()      # see the app's own values, not the conftest's no-wait patch
+    assert (setup_runner.NETWORK_RETRIES, setup_runner.RETRY_DELAY) == (30, 5.0)
+
+
+def test_gives_up_after_30_retries():
+    attempts, retries = [], []
+
+    def down(url, *a, **k):
+        attempts.append(url)
+        raise NetworkError("no internet")
+    with pytest.raises(SetupError) as e:
+        run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(),
+                  lambda p: p.retry and retries.append(p.retry), threading.Event(),
+                  downloader=down, sources=FakeSources(), selftest=no_test)
+    assert e.value.kind == "network" and len(attempts) == 31     # the first try plus 30 retries
+    assert retries == list(range(1, 31))
+
+
+def test_other_errors_are_not_retried():
+    from booktranscriber.downloader import ChecksumError
+    attempts = []
+
+    def damaged(url, *a, **k):
+        attempts.append(url)
+        raise ChecksumError("damaged")
+    with pytest.raises(SetupError) as e:
+        run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), no_test, threading.Event(),
+                  downloader=damaged, sources=FakeSources(), selftest=no_test)
+    assert e.value.kind == "checksum" and len(attempts) == 1
+
+
+def test_pause_during_the_wait_stops_at_once(monkeypatch):
+    from booktranscriber import setup_runner
+    monkeypatch.setattr(setup_runner, "RETRY_DELAY", 30)
+    cancel = threading.Event()
+
+    def down(url, *a, **k):
+        raise NetworkError("no internet")
+    with pytest.raises(SetupError) as e:
+        run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(),
+                  lambda p: p.retry and cancel.set(), cancel,
+                  downloader=down, sources=FakeSources(), selftest=no_test)
+    assert e.value.kind == "cancelled"
+
+
+def test_listing_the_files_is_retried_too():
+    class FlakySources(FakeSources):
+        calls = 0
+
+        def model_files(self, repo_id, dest_dir):
+            FlakySources.calls += 1
+            if FlakySources.calls <= 2:
+                raise OSError("network unreachable")
+            return super().model_files(repo_id, dest_dir)
+    seen = []
+    s = run_setup(make_plan(GPU_INFO, None, include_llm=False), Settings(), seen.append, threading.Event(),
+                  downloader=fake_dl, sources=FlakySources(), selftest=no_test)
+    assert s.setup_done and [p.retry for p in seen if p.retry] == [1, 2]
+
+
+def test_helper_download_later_retries_too():
+    from booktranscriber.setup_runner import run_llm_setup
+    attempts = []
+
+    def flaky(url, *a, **k):
+        attempts.append(url)
+        if len(attempts) == 1:
+            raise NetworkError("reset")
+        fake_dl(url, *a, **k)
+    run_llm_setup("gemma-4-e4b", "vulkan", Settings(), no_test, threading.Event(), downloader=flaky, llm=FakeLlm())
+    assert attempts[0] == attempts[1]

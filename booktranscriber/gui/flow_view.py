@@ -19,7 +19,7 @@ from ..settings import save_settings
 from ..setup_runner import LLM_RUNTIME_ESTIMATE
 from ..syscheck import detect_system
 from .runners import SetupRunner, TranscribeJob
-from .widgets import body_label, primary_button, secondary_button, title_label
+from .widgets import body_label, primary_button, retry_text, secondary_button, title_label
 
 STATES = ("names", "transcribing", "result")
 LANGUAGE_CHOICES = [("fa", "فارسی"), ("en", "English"), ("ar", "العربية"), ("ru", "Русский"),
@@ -488,7 +488,9 @@ class FlowView(QWidget):
         else:
             total, done, eta = p.overall_total, p.overall_done, p.eta_seconds
         text = tr("result.downloading", done=fmt_bytes(done, lang), total=fmt_bytes(total, lang))
-        if eta is not None:
+        if p is not None and p.retry:
+            text += "\n" + retry_text(self.i18n, p.retry)
+        elif eta is not None:
             text += " · " + tr("flow.eta", time=fmt_duration(eta, lang))
         self.local_status.setText(text)
 

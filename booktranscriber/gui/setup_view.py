@@ -13,7 +13,7 @@ from ..settings import Settings
 from ..setup_runner import ITEMS, LLM_RUNTIME_ESTIMATE, MODEL_ESTIMATE, SetupProgress, make_plan
 from ..syscheck import detect_system, find_existing_model, is_nvidia, source_checkout_dir
 from . import downloads_dialog
-from .widgets import ProgressRow, body_label, primary_button, secondary_button, title_label
+from .widgets import ProgressRow, body_label, primary_button, retry_text, secondary_button, title_label
 
 ASSUMED_SPEED = 4_000_000   # bytes/s, for the welcome screen's time estimate
 STATES = ("welcome", "downloading", "ready", "error")
@@ -325,7 +325,11 @@ class SetupView(QWidget):
         self.last_done = p.overall_done
         pct = int(100 * p.overall_done / p.overall_total) if p.overall_total else 0
         self.overall_bar.setValue(pct)
-        if p.eta_seconds is not None:
+        if p.retry:
+            self.overall_status.setText(retry_text(self.i18n, p.retry))
+            if not p.overall_total:     # still listing what to download: no file rows to update yet
+                return
+        elif p.eta_seconds is not None:
             self.overall_status.setText(tr("setup.overall_status", pct=fmt_number(pct, lang),
                                            time=fmt_duration(p.eta_seconds, lang)))
         else:

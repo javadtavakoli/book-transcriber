@@ -582,6 +582,30 @@ def test_download_shows_words_and_can_be_cancelled(qtbot, settings, raw_file, mo
     assert v.local_button.text().startswith("Download the AI helper")
 
 
+def test_download_says_when_it_is_waiting_to_retry(qtbot, settings, raw_file, monkeypatch, request):
+    import threading
+    monkeypatch.setattr(flow_view, "detect_system", lambda d: OK)
+    monkeypatch.setattr(setup_runner, "RETRY_DELAY", 5.0)
+
+    def offline(model_key, backend, s, on_progress, cancel, **kw):
+        on_progress(SetupProgress("llm", 1_200_000_000, 4_800_000_000, 1_200_000_000, 4_800_000_000, 0.0, None, 2))
+        cancel.wait(10)
+        raise SetupError("cancelled")
+    monkeypatch.setattr(setup_runner, "run_llm_setup", offline)
+    settings.llm_model_path = None
+    v = FlowView(I18n("en"), settings, FakeTranscriber())
+    qtbot.addWidget(v)
+    v.show()
+    request.addfinalizer(v.llm_download.stop_and_wait)
+    v.open_result(RecentItem(str(raw_file.with_name("s12.m4a")), str(raw_file), None, "t"), from_recents=True)
+    v.local_button.click()
+    qtbot.waitUntil(lambda: "Trying again" in v.local_status.text(), timeout=5000)
+    assert "No internet connection. Trying again in 5 seconds (2 of 30)…" in v.local_status.text()
+    assert v.local_problem.isHidden()
+    v.local_cancel_button.click()
+    qtbot.waitUntil(lambda: not v.llm_download.is_running(), timeout=5000)
+
+
 def test_stale_server_reaped_before_transcription(qtbot, window, raw_file, monkeypatch):
     from booktranscriber.gui import main_window
     order = []
