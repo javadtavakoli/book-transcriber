@@ -118,6 +118,17 @@ def test_selftest_consumes_segments_without_vad():
     assert events[0]["type"] == "loaded" and events[-1] == {"type": "done", "out": "", "segments": 1}
 
 
+def test_selftest_reads_a_real_audio_file():
+    # Through a file, like a real transcription, so a broken audio reader fails setup's check too.
+    model = FakeModel(_segs((0.0, 1.0, "x")))
+    seen = []
+    model.transcribe = lambda audio, **kw: (seen.append((audio, os.path.isfile(audio))),
+                                            FakeModel.transcribe(model, audio, **kw))[1]
+    assert run(["--selftest", "--model", "x"], [].append, loader=make_loader(model)) == 0
+    (audio, existed), = seen
+    assert audio.endswith(".wav") and existed and not os.path.exists(audio)
+
+
 def test_worker_command_source_mode(monkeypatch):
     monkeypatch.delattr(sys, "frozen", raising=False)
     assert worker_command(["--selftest"])[1:] == ["-m", "booktranscriber.worker", "--selftest"]

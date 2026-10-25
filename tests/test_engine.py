@@ -69,3 +69,25 @@ def test_local_model_ref_leaves_names_alone(tmp_path, monkeypatch):
     assert booktranscriber.engine.local_model_ref("large-v3") == "large-v3"
     assert booktranscriber.engine.local_model_ref(str(tmp_path / "missing")) == str(tmp_path / "missing")
     assert os.getcwd() == str(tmp_path)
+
+
+def test_faster_whisper_reads_an_audio_file_from_a_persian_folder(tmp_path, wav_file):
+    # faster-whisper opens every recording through PyAV; a PyAV it doesn't fit (av 19 dropped an
+    # argument faster-whisper 1.2.1 passes) breaks every transcription while model loading still works.
+    import shutil
+    from faster_whisper.audio import decode_audio
+    folder = tmp_path / "کتاب ها"
+    folder.mkdir()
+    audio = shutil.copy(wav_file, folder / "فصل یک.wav")
+    assert len(decode_audio(str(audio))) == 32000
+
+
+def test_engine_dependencies_are_pinned():
+    # A fresh install must get the versions the app was tested with, not whatever is newest that day.
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    assert "-c constraints.txt" in (root / "requirements.txt").read_text().splitlines()
+    pins = dict(line.split("==") for line in (root / "constraints.txt").read_text().splitlines()
+                if "==" in line and not line.startswith("#"))
+    for name in ("av", "ctranslate2", "tokenizers", "onnxruntime", "numpy", "huggingface-hub"):
+        assert name in pins, name

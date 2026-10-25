@@ -1,0 +1,25 @@
+# The exact versions the app is tested with, for the packages faster-whisper and the GUI pull in.
+# Without these, each install (and each release build) gets whatever is newest that day: av 19
+# dropped an argument faster-whisper 1.2.1 passes, so every transcription failed in v0.1.1/0.1.2.
+# Change a version here only after the tests pass with it.
+anyio==4.14.2
+av==18.0.0
+certifi==2026.6.17
+click==8.4.2
+ctranslate2==4.8.1
+filelock==3.29.7
+flatbuffers==25.12.19
+fsspec==2026.6.0
+h11==0.16.0
+hf-xet==1.5.1
+httpcore==1.0.9
+huggingface-hub==1.23.0
+idna==3.18
+numpy==2.5.1
+onnxruntime==1.27.0
+packaging==26.2
+protobuf==7.35.1
+pyyaml==6.0.3
+tokenizers==0.23.1
+tqdm==4.68.4
+typing-extensions==4.16.0

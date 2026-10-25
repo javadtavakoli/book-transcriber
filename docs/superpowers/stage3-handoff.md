@@ -125,3 +125,17 @@ At the owner's request, setup and the AI helper's later download no longer stop 
 - **Not retried:** a server refusal (404/403), checksum errors, a full disk and broken archives. These show the error screen at once.
 - **Pause and Cancel** end the wait immediately. After 30 failures in a row, the usual error screen appears.
 - Reviewed and approved. CI passed on all three systems.
+
+## v0.1.3 (2026-10-25): transcription never started on Windows
+The owner's Windows logs showed every transcription failing with `TypeError: open() got an unexpected keyword argument 'metadata_errors'`.
+- **Cause:** faster-whisper 1.2.1 opens each recording with `av.open(..., metadata_errors="ignore")`. PyAV 19 removed that argument. requirements.txt only *mentioned* the transitive versions in a comment, so the v0.1.1 and v0.1.2 builds both installed av 19.0.2, plus newer ctranslate2, onnxruntime and huggingface-hub (2.3, a major jump). Development used av 18.0.0, which works.
+- **Why nothing caught it:**
+  - The worker self-test (setup's check and CI's model test) fed the model a numpy array, so the audio reader never ran.
+  - The smoke test's worker check used a missing file, which stops before faster-whisper.
+- **Fix:**
+  - A new `constraints.txt` pins the cross-platform packages to the tested versions. requirements.txt includes it with `-c`, so setup scripts, CI and release builds all get it.
+  - The self-test now writes a WAV file and transcribes it from disk.
+  - The release smoke test also transcribes a real WAV from a Persian folder with the frozen app.
+  - A unit test decodes audio from a Persian folder through faster-whisper.
+- **Checked:** the self-test fails with av 19 (same TypeError as the owner's log) and passes with av 18.
+- **Not fixed (seen in the same log):** CUDA float16 and int8_float16 were both refused on the owner's graphics card, so it ran on the processor. This needs the card model to diagnose.

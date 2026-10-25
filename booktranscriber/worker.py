@@ -8,8 +8,11 @@ CUDA crash becomes an error message instead of taking the window down.
 """
 import argparse
 import os
+import shutil
 import sys
+import tempfile
 import time
+import wave
 from typing import Callable
 
 from . import engine
@@ -101,10 +104,19 @@ def _selftest(a, emit, loader) -> int:
     import numpy as np
     model, backend = loader(a.model, a.device, a.download_root, _log)
     emit({"type": "loaded", "backend": backend})
-    noise = np.random.default_rng(0).normal(0, 0.01, 32000).astype(np.float32)
-    # No VAD, and consume every segment, so the encoder and GPU kernels really run.
-    segments, _ = engine.transcribe(model, noise, engine.TranscribeOptions(language="fa"), vad_filter=False)
-    n = sum(1 for _ in segments)
+    noise = np.random.default_rng(0).normal(0, 0.01, 32000)
+    # Through a file, like a real transcription, so the audio reader (PyAV) is checked too.
+    folder = tempfile.mkdtemp()
+    path = os.path.join(folder, "selftest.wav")
+    try:
+        with wave.open(path, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+            w.writeframes((noise * 32767).astype("<i2").tobytes())
+        # No VAD, and consume every segment, so the encoder and GPU kernels really run.
+        segments, _ = engine.transcribe(model, path, engine.TranscribeOptions(language="fa"), vad_filter=False)
+        n = sum(1 for _ in segments)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
     emit({"type": "done", "out": "", "segments": n})
     return 0
 

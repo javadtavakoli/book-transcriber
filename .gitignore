@@ -15,6 +15,7 @@ models/
 !requirements.txt
 !tests/fixtures/*.txt
 !requirements-*.txt
+!constraints.txt
 
 # Python
 __pycache__/

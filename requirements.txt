@@ -6,8 +6,5 @@ faster-whisper==1.2.1
 nvidia-cublas-cu12==12.9.2.10
 nvidia-cudnn-cu12==9.24.0.43
 
-# Pulled in automatically by faster-whisper, pinned here for reproducibility:
-#   ctranslate2==4.8.1
-#   av==18.0.0
-#   tokenizers==0.23.1
-#   onnxruntime==1.27.0
+# What faster-whisper pulls in (av, ctranslate2, tokenizers, onnxruntime, ...), pinned to tested versions.
+-c constraints.txt
