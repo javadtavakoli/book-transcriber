@@ -1,2 +1,2 @@
 """Writing Parrot: local, offline transcription of spoken-word recordings."""
-__version__ = "0.1.3"
+__version__ = "0.1.4"
