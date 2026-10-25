@@ -1,4 +1,4 @@
-"""Render booktranscriber/assets/icon.svg to icon.png (256) and a multi-size icon.ico.
+"""Render booktranscriber/assets/icon.svg to icon.png (256), a multi-size icon.ico and icon.icns (macOS).
 
 Run: ./venv/bin/python tools/make_icons.py
 """
@@ -15,6 +15,9 @@ from PySide6.QtSvg import QSvgRenderer
 
 ASSETS = Path(__file__).resolve().parent.parent / "booktranscriber" / "assets"
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
+# PNG-compressed ICNS entry types and their pixel sizes (the @2x ones double the point size).
+ICNS_TYPES = {"icp4": 16, "icp5": 32, "ic11": 32, "ic12": 64, "ic07": 128, "ic13": 256,
+              "ic08": 256, "ic14": 512, "ic09": 512, "ic10": 1024}
 
 
 def render(renderer: QSvgRenderer, size: int) -> QImage:
@@ -47,6 +50,12 @@ def write_ico(path: Path, images: dict[int, bytes]) -> None:
     path.write_bytes(head + entries + data)
 
 
+def write_icns(path: Path, images: dict[str, bytes]) -> None:
+    """An ICNS container with PNG entries: each is type, big-endian length (header included), data."""
+    body = b"".join(t.encode() + struct.pack(">I", 8 + len(png)) + png for t, png in images.items())
+    path.write_bytes(b"icns" + struct.pack(">I", 8 + len(body)) + body)
+
+
 def main() -> int:
     app = QGuiApplication(sys.argv)   # noqa: F841  (Qt needs it alive to paint)
     renderer = QSvgRenderer(str(ASSETS / "icon.svg"))
@@ -55,6 +64,7 @@ def main() -> int:
         return 1
     (ASSETS / "icon.png").write_bytes(png_bytes(render(renderer, 256)))
     write_ico(ASSETS / "icon.ico", {s: png_bytes(render(renderer, s)) for s in ICO_SIZES})
+    write_icns(ASSETS / "icon.icns", {t: png_bytes(render(renderer, s)) for t, s in ICNS_TYPES.items()})
     return 0
 
 

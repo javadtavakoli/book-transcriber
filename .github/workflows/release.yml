@@ -1,5 +1,5 @@
-# Build the Windows installer. On a v* tag, also put it on a draft GitHub release.
-# Run it by hand (workflow_dispatch) to get the installer as a workflow artifact without a release.
+# Build the Windows installer, the Ubuntu .deb and the macOS .dmg. On a v* tag, also put them on a draft
+# GitHub release. Run it by hand (workflow_dispatch) to get them as workflow artifacts without a release.
 name: Release
 
 on:
@@ -72,30 +72,160 @@ jobs:
           & $iscc "/DMyAppVersion=$env:VERSION" packaging\installer.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Write SHA256SUMS.txt
-        shell: pwsh
-        working-directory: dist
-        run: |
-          $lines = Get-ChildItem WritingParrot-Setup-*.exe | ForEach-Object {
-            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
-          }
-          [IO.File]::WriteAllText("$PWD\SHA256SUMS.txt", ($lines -join "`n") + "`n")
-          Get-Content SHA256SUMS.txt
-
       - name: Upload the installer
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: WritingParrot-windows
-          path: |
-            dist/WritingParrot-Setup-*.exe
-            dist/SHA256SUMS.txt
+          path: dist/WritingParrot-Setup-*.exe
+          if-no-files-found: warn
+          overwrite: true
+
+  linux:
+    name: Ubuntu package
+    # The oldest supported Ubuntu: the build links against this runner's glibc, so it also starts on newer ones.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Qt system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 libxcb-cursor0
+
+      # Same as ci.yml: the multi-GB CUDA wheels are left out (the app downloads GPU support itself).
+      - name: Install Python dependencies (without CUDA wheels)
+        shell: bash
+        run: |
+          grep -v '^nvidia-' requirements.txt > requirements-ci.txt
+          sed 's/^-r requirements.txt$/-r requirements-ci.txt/' requirements-gui.txt > requirements-gui-ci.txt
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-gui-ci.txt -r requirements-build.txt pytest==9.1.1 pytest-qt==4.5.0
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python tools/check_version.py "$TAG"
+
+      - name: Read the version
+        id: version
+        run: echo "version=$(python -c 'from booktranscriber import __version__; print(__version__)')" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        run: python -m pytest tests -q -p no:cacheprovider
+
+      - name: Build the app (PyInstaller)
+        run: pyinstaller packaging/writing_parrot.spec --noconfirm
+
+      - name: Smoke-test the build
+        run: python packaging/smoke_test.py dist/WritingParrot --model-test
+
+      - name: Build the .deb
+        run: packaging/build_deb.sh "${{ steps.version.outputs.version }}"
+
+      - name: Check the .deb installs and starts
+        run: |
+          deb="dist/writing-parrot_${{ steps.version.outputs.version }}_amd64.deb"
+          dpkg-deb --info "$deb"
+          sudo apt-get install -y "./$deb"
+          desktop-file-validate /usr/share/applications/writing-parrot.desktop || true
+          writing-parrot --smoke --smoke-out "$RUNNER_TEMP/smoke.txt"
+          cat "$RUNNER_TEMP/smoke.txt"
+          grep -q '^SMOKE OK' "$RUNNER_TEMP/smoke.txt"
+
+      - name: Upload the package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WritingParrot-linux
+          path: dist/writing-parrot_*_amd64.deb
+          if-no-files-found: warn
+          overwrite: true
+
+  macos:
+    name: macOS disk image
+    # Apple Silicon only. Speech runs on the processor here (no CUDA on a Mac).
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Same as ci.yml: the multi-GB CUDA wheels are left out (the app downloads GPU support itself).
+      - name: Install Python dependencies (without CUDA wheels)
+        shell: bash
+        run: |
+          grep -v '^nvidia-' requirements.txt > requirements-ci.txt
+          sed 's/^-r requirements.txt$/-r requirements-ci.txt/' requirements-gui.txt > requirements-gui-ci.txt
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-gui-ci.txt -r requirements-build.txt pytest==9.1.1 pytest-qt==4.5.0
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python tools/check_version.py "$TAG"
+
+      - name: Read the version
+        id: version
+        run: echo "version=$(python -c 'from booktranscriber import __version__; print(__version__)')" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        run: python -m pytest tests -q -p no:cacheprovider
+
+      - name: Build the app (PyInstaller)
+        run: pyinstaller packaging/writing_parrot.spec --noconfirm
+
+      # Not notarized: PyInstaller signs it ad hoc, and arm64 code that isn't signed at all won't start.
+      - name: Check the signature
+        run: codesign --verify --deep --strict --verbose=2 dist/WritingParrot.app
+
+      - name: Smoke-test the build
+        run: python packaging/smoke_test.py dist/WritingParrot.app --model-test
+
+      - name: Build the .dmg
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p build/dmg
+          cp -R dist/WritingParrot.app build/dmg/
+          ln -s /Applications build/dmg/Applications
+          dmg="dist/WritingParrot-$VERSION-macos-arm64.dmg"
+          for i in 1 2 3; do       # hdiutil sometimes fails with "Resource busy" on the runners
+            hdiutil create -volname "Writing Parrot" -srcfolder build/dmg -ov -format UDZO "$dmg" && break
+            [ "$i" = 3 ] && exit 1
+            sleep 10
+          done
+          hdiutil verify "$dmg"
+
+      - name: Upload the disk image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WritingParrot-macos
+          path: dist/WritingParrot-*-macos-arm64.dmg
           if-no-files-found: warn
           overwrite: true
 
   release:
     name: Draft release
-    needs: windows
+    needs: [windows, linux, macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -112,8 +242,18 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: WritingParrot-windows
+          pattern: WritingParrot-*
           path: artifact
+
+      - name: Write SHA256SUMS.txt
+        shell: bash
+        run: |
+          mkdir upload
+          cp artifact/*/* upload/
+          cd upload
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          [ "$(ls | wc -l)" = 4 ] || { echo "expected 3 installers and SHA256SUMS.txt" >&2; exit 1; }
 
       - name: Create or update the draft release
         shell: bash
@@ -124,10 +264,10 @@ jobs:
               echo "Release $TAG is already published; not changing its files." >&2
               exit 1
             fi
-            gh release upload "$TAG" artifact/* --clobber --repo "$REPO"
+            gh release upload "$TAG" upload/* --clobber --repo "$REPO"
           elif [[ "$draft" == *"release not found"* ]]; then
             gh release create "$TAG" --draft --title "Writing Parrot $TAG" \
-              --notes-file release-notes.md artifact/* --repo "$REPO"
+              --notes-file release-notes.md upload/* --repo "$REPO"
           else
             echo "$draft" >&2      # any other failure (auth, network) must not fall through to create
             exit 1

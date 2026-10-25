@@ -26,7 +26,15 @@ double-click it. Windows may warn because the app isn't signed: click **More inf
 
 ![Click More info, then Run anyway](packaging/smartscreen.png)
 
-**Ubuntu and macOS:** coming soon.
+**Ubuntu (22.04 or newer):** download `writing-parrot_<version>_amd64.deb` and install it with
+`sudo apt install ./writing-parrot_<version>_amd64.deb` (or double-click it to open App Center).
+Writing Parrot then appears in your apps.
+
+**macOS (Apple Silicon, macOS 12 or newer):** download `WritingParrot-<version>-macos-arm64.dmg`,
+open it and drag Writing Parrot into Applications. The app isn't signed by Apple yet, so the first
+time macOS refuses to open it: click **Done**, then go to **System Settings → Privacy & Security**,
+scroll down and click **Open Anyway**. On a Mac speech is recognised on the processor, which is
+much slower than on an NVIDIA graphics card.
 
 <div dir="rtl">
 
@@ -35,7 +43,15 @@ double-click it. Windows may warn because the app isn't signed: click **More inf
 روی آن دوبار کلیک کنید. چون برنامه هنوز امضای دیجیتال ندارد، ممکن است ویندوز هشدار بدهد: اول روی
 **More info** و بعد روی **Run anyway** کلیک کنید.
 
-**اوبونتو و مک:** به‌زودی.
+**اوبونتو (۲۲.۰۴ یا جدیدتر):** فایل `writing-parrot_<version>_amd64.deb` را دانلود کنید و با
+`sudo apt install ./writing-parrot_<version>_amd64.deb` نصبش کنید (یا روی آن دوبار کلیک کنید تا
+App Center باز شود). بعد طوطی‌نویس در فهرست برنامه‌ها پیدا می‌شود.
+
+**مک (Apple Silicon، macOS 12 یا جدیدتر):** فایل `WritingParrot-<version>-macos-arm64.dmg` را
+دانلود کنید، بازش کنید و Writing Parrot را به پوشهٔ Applications بکشید. برنامه هنوز امضای اپل را
+ندارد، پس بار اول مک اجازهٔ باز کردنش را نمی‌دهد: روی **Done** کلیک کنید، بعد به
+**System Settings → Privacy & Security** بروید، پایین بیایید و روی **Open Anyway** کلیک کنید.
+روی مک تشخیص گفتار با پردازنده انجام می‌شود که خیلی کندتر از کارت گرافیک NVIDIA است.
 
 </div>
 
@@ -49,11 +65,11 @@ The sections below are for running from source and for the command line.
 
 ---
 
-## Desktop app (Windows installer, or Linux from source)
+## Desktop app (installers, or Linux from source)
 
 A point-and-click version for people who'd rather not use a terminal, in English or
-Persian (switch with the **فا / EN** button). On Windows, install it from **Download**
-above. On Linux, run it from source:
+Persian (switch with the **فا / EN** button). Install it from **Download** above, or on
+Linux run it from source:
 
 ```bash
 ./setup.sh        # one time
@@ -87,8 +103,9 @@ above. On Linux, run it from source:
   transcription so the speech model has the graphics memory.
 
 The app keeps its downloads and settings in your user data folder
-(`~/.local/share/WritingParrot` on Linux, `%LOCALAPPDATA%\WritingParrot` on Windows), not in
-the project folder. The Windows installer is under **Download** above; macOS comes in a later release.
+(`~/.local/share/WritingParrot` on Linux, `%LOCALAPPDATA%\WritingParrot` on Windows,
+`~/Library/Application Support/WritingParrot` on macOS), not in the project folder. The installers
+are under **Download** above.
 
 ---
 

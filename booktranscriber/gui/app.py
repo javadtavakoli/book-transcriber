@@ -15,6 +15,7 @@ def apply_app_identity(app) -> None:
     """Name and icon, so the window, taskbar and dock show Writing Parrot."""
     app.setApplicationName("Writing Parrot")
     app.setWindowIcon(QIcon(str(paths.asset("icon.png"))))
+    app.setDesktopFileName("writing-parrot")    # Wayland: matches the .deb's writing-parrot.desktop
     if sys.platform == "win32":
         try:
             import ctypes

@@ -1,11 +1,16 @@
 # PyInstaller spec for Writing Parrot: one folder, windowed.
 #   pyinstaller packaging/writing_parrot.spec --noconfirm      ->  dist/WritingParrot/WritingParrot.exe
+# On macOS the folder is also wrapped as dist/WritingParrot.app.
 # The CUDA wheels (nvidia-*) are never bundled: setup downloads them into the data folder.
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 ROOT = os.path.dirname(SPECPATH)
+MAC = sys.platform == "darwin"
+sys.path.insert(0, ROOT)
+from booktranscriber import __version__  # noqa: E402
 
 datas = [(os.path.join(ROOT, "booktranscriber", "assets"), os.path.join("booktranscriber", "assets"))]
 binaries = []
@@ -55,7 +60,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="WritingParrot",
-    icon=os.path.join(ROOT, "booktranscriber", "assets", "icon.ico"),
+    icon=os.path.join(ROOT, "booktranscriber", "assets", "icon.icns" if MAC else "icon.ico"),
     console=False,
     upx=False,          # UPX-packed files trip antivirus heuristics
     debug=False,
@@ -70,3 +75,19 @@ coll = COLLECT(
     upx=False,
     strip=False,
 )
+
+if MAC:
+    app = BUNDLE(
+        coll,
+        name="WritingParrot.app",
+        icon=os.path.join(ROOT, "booktranscriber", "assets", "icon.icns"),
+        bundle_identifier="io.github.javadtavakoli.writingparrot",
+        version=__version__,
+        info_plist={
+            "CFBundleDisplayName": "Writing Parrot",
+            "CFBundleName": "Writing Parrot",
+            "CFBundleShortVersionString": __version__,
+            "NSHighResolutionCapable": True,
+            "LSMinimumSystemVersion": "12.0",
+        },
+    )

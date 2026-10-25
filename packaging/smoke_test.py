@@ -1,4 +1,5 @@
 """Smoke-test a frozen build:  python packaging/smoke_test.py dist/WritingParrot [--model-test]
+(on macOS, pass dist/WritingParrot.app: the whole bundle is copied and its inner binary run)
 
 Copies the build to a folder with a Persian name and a space, then checks that the GUI self-check
 passes and that the worker answers a missing file with a not_found error line. Exits non-zero on failure.
@@ -138,19 +139,21 @@ def main(argv: list[str]) -> int:
         print(__doc__)
         return 2
     dist = Path(argv[0]).resolve()
-    if not (dist / EXE).is_file():
-        return fail(f"{dist / EXE} not found")
+    inner = Path("Contents", "MacOS", EXE) if dist.suffix == ".app" else Path(EXE)
+    if not (dist / inner).is_file():
+        return fail(f"{dist / inner} not found")
     tmp = Path(tempfile.mkdtemp())
     try:
-        app = tmp / "طوطی تست"
+        app = tmp / ("طوطی تست" + dist.suffix)
         shutil.copytree(dist, app, symlinks=True)
         work = tmp / "پوشه کار"      # non-ASCII --audio and --out paths too
         (work / "data").mkdir(parents=True)
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen", BT_DATA_DIR=str(work / "data"))
         start = time.time()
-        code = check_gui(app / EXE, work, env) or check_worker(app / EXE, work, env)
+        exe = app / inner
+        code = check_gui(exe, work, env) or check_worker(exe, work, env)
         if code == 0 and model_test:
-            code = check_model(app / EXE, tmp, env)
+            code = check_model(exe, tmp, env)
         print(f"{'PASS' if code == 0 else 'FAILED'} in {time.time() - start:.0f} s", flush=True)
         return code
     finally:
